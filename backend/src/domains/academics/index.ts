@@ -1,0 +1,44 @@
+import { Router } from "express";
+import AcademicYears from "./academic_years/index.js";
+import Assessments from "./assessments/index.js";
+import AssessmentResults from "./assessment_results/index.js";
+import Assignments from "./assignments/index.js";
+import Classes from "./classes/index.js";
+import Curricula from "./curricula/index.js";
+import Exams from "./exams/index.js";
+import ExamResults from "./exam_results/index.js";
+import GradeLevels from "./grade_levels/index.js";
+import GradingConfigurations from "./grading_configurations/index.js";
+import Lessons from "./lessons/index.js";
+import LessonDeliveries from "./lesson_deliveries/index.js";
+import ReportCards from "./report_cards/index.js";
+import Streams from "./streams/index.js";
+import StudentReport from "./student_report/index.js";
+import Subjects from "./subjects/index.js";
+import Terms from "./terms/index.js";
+import Timetables from "./timetables/index.js";
+import Views from "./views/index.js";
+
+const router = Router();
+
+router.use("/academic-years", AcademicYears);
+router.use("/assessments", Assessments);
+router.use("/assessment-results", AssessmentResults);
+router.use("/assignments", Assignments);
+router.use("/classes", Classes);
+router.use("/curricula", Curricula);
+router.use("/exams", Exams);
+router.use("/exam-results", ExamResults);
+router.use("/grade-levels", GradeLevels);
+router.use("/grading-configurations", GradingConfigurations);
+router.use("/lessons", Lessons);
+router.use("/lesson-deliveries", LessonDeliveries);
+router.use("/report-cards", ReportCards);
+router.use("/streams", Streams);
+router.use("/student-report", StudentReport);
+router.use("/subjects", Subjects);
+router.use("/terms", Terms);
+router.use("/timetables", Timetables);
+router.use("/views", Views);
+
+export default router;

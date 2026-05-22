@@ -1,0 +1,15 @@
+export * as AcademicYears from "./academic_years/index.js";
+export * as Assessments from "./assessments/index.js";
+export * as Assignments from "./assignments/index.js";
+export * as Classes from "./classes/index.js";
+export * as Curricula from "./curricula/index.js";
+export * as Exams from "./exams/index.js";
+export * as ExamResults from "./exam_results/index.js";
+export * as GradeLevels from "./grade_levels/index.js";
+export * as Lessons from "./lessons/index.js";
+export * as ReportCards from "./report_cards/index.js";
+export * as StudentReport from "./student_report/index.js";
+export * as Subjects from "./subjects/index.js";
+export * as Terms from "./terms/index.js";
+export * as Timetables from "./timetables/index.js";
+export * as Views from "./views/index.js";

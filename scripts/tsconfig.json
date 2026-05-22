@@ -1,0 +1,25 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "../",
+    "outDir": "../dist-scripts",
+    "noEmit": true,
+
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "types": ["node"],
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+
+    "baseUrl": "..",
+    "paths": {
+      "@backend/*": ["backend/src/*"]
+    }
+  },
+  "include": [
+    "./**/*",             // This script folder
+    "../backend/src/**/*" // The backend source
+  ]
+}

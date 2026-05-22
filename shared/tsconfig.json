@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "types": ["node"],
+    "composite": true,          // required for project references
+    "declaration": true,        // emit .d.ts files
+    "declarationMap": true,     // helpful for debugging
+    "emitDeclarationOnly": true // optional: only emit types if you don’t need JS
+  },
+  "include": ["src/**/*"]
+}

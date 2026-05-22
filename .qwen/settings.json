@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm *)",
+      "Bash(move *)",
+      "Bash(mkdir *)",
+      "Bash(findstr *)",
+      "Bash(del *)",
+      "Bash(dir *)",
+      "Bash(rmdir *)",
+      "Bash(curl *)",
+      "Bash(ts-node *)",
+      "Bash(npx *)",
+      "Bash(netstat *)",
+      "Bash(taskkill *)",
+      "Bash(r *)",
+      "Bash(@powershell *)",
+      "Bash(powershell *)",
+      "Bash(node *)",
+      "Bash(ren *)",
+      "Bash(@findstr *)",
+      "Bash(select-string *)",
+      "Bash(psql *)",
+      "Bash(type *)",
+      "Bash(npm run *)"
+    ]
+  },
+  "$version": 4
+}

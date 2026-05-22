@@ -1,0 +1,34 @@
+{
+  "name": "scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.90.1",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^16.6.1",
+    "fs": "0.0.1-security",
+    "pg": "^8.11.0",
+    "pluralize": "^8.0.0",
+    "tslib": "^2.6.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/chokidar": "2.1.7",
+    "@types/node": "^20.19.27",
+    "@types/pg": "^8.16.0",
+    "@types/pluralize": "^0.0.33",
+    "chokidar": "^5.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.2"
+  },
+  "scripts": {
+    "migrate": "ts-node runMigrations.ts",
+    "sync:db": "ts-node sync_Backend_Db.ts",
+    "sync:db:watch": "ts-node sync_Backend_Db.ts --watch",
+    "sync:all": "ts-node masterSync.ts"
+  }
+}

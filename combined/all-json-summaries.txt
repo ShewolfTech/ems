@@ -1,0 +1,32 @@
+
+=== backend :: C:\Bright\ems\backend\package.json ===
+Top-level keys: name, version, type, scripts, dependencies, devDependencies
+
+=== backend :: C:\Bright\ems\backend\tsconfig.json ===
+Top-level keys: extends, compilerOptions, include, exclude
+
+=== frontend :: C:\Bright\ems\frontend\node_modules\.vite\deps\package.json ===
+Top-level keys: type
+
+=== frontend :: C:\Bright\ems\frontend\node_modules\.vite\deps\_metadata.json ===
+Top-level keys: hash, configHash, lockfileHash, browserHash, optimized, chunks
+
+=== frontend :: C:\Bright\ems\frontend\package.json ===
+Top-level keys: name, version, type, scripts, dependencies, devDependencies
+
+Error reading C:\Bright\ems\frontend\tsconfig.json: SyntaxError: Expected double-quoted property name in JSON at position 371 (line 15 column 5)
+
+=== scripts :: C:\Bright\ems\scripts\package.json ===
+Top-level keys: name, version, type, private, dependencies, devDependencies, scripts
+
+=== scripts :: C:\Bright\ems\scripts\tsconfig.json ===
+Top-level keys: extends, compilerOptions, include
+
+=== shared :: C:\Bright\ems\shared\package.json ===
+Top-level keys: name, version, main, types, private, type, dependencies, devDependencies
+
+=== shared :: C:\Bright\ems\shared\tsconfig.json ===
+Top-level keys: extends, compilerOptions, include
+
+=== combined :: C:\Bright\ems\combined\package.json ===
+Top-level keys: name, version, type

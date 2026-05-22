@@ -1,0 +1,3844 @@
+
+-- ============================================
+-- Bit 7: students (Application + Lifecycle Identity with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS students (
+    id BIGSERIAL PRIMARY KEY, -- permanent student_id
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    user_id BIGINT REFERENCES users(id) ON DELETE CASCADE, -- linked after admission
+    admission_no VARCHAR(50) NOT NULL, -- assigned at admission
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    date_of_birth DATE NOT NULL,
+    gender VARCHAR(10),
+    guardian_name VARCHAR(100),
+    guardian_contact VARCHAR(50),
+    previous_school VARCHAR(150),
+    application_date DATE DEFAULT NOW(),
+    admission_date DATE,
+    admission_status_id BIGINT REFERENCES statuses(id), -- applied, admitted, rejected, waitlisted
+    is_active BOOLEAN DEFAULT TRUE, -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE, -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE (school_id, admission_no) -- ✅ tenant-scoped uniqueness
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE students ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='students' AND policyname='students_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY students_isolation ON students';
+    END IF;
+END$$;
+
+CREATE POLICY students_isolation ON students
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_students_school_name 
+    ON students(school_id, last_name);
+
+CREATE INDEX IF NOT EXISTS idx_students_admission_no 
+    ON students(school_id, admission_no);
+
+CREATE INDEX IF NOT EXISTS idx_students_admission_status_active
+    ON students(admission_status_id)
+    WHERE is_deleted = FALSE AND is_active = TRUE;
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_students_updated_at ON students;
+CREATE TRIGGER trg_students_updated_at
+BEFORE UPDATE ON students
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_students_audit ON students;
+CREATE TRIGGER trg_students_audit
+AFTER INSERT OR UPDATE OR DELETE ON students
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_student(
+    _school_id BIGINT, _first_name TEXT, _last_name TEXT, _dob DATE,
+    _gender TEXT, _guardian_name TEXT, _guardian_contact TEXT, _previous_school TEXT
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('students','insert');
+
+    INSERT INTO students (
+        school_id, first_name, last_name, date_of_birth, gender,
+        guardian_name, guardian_contact, previous_school,
+        application_date, created_by
+    )
+    VALUES (
+        _school_id, _first_name, _last_name, _dob, _gender,
+        _guardian_name, _guardian_contact, _previous_school,
+        NOW(), current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_student(
+    _id BIGINT, _first_name TEXT, _last_name TEXT, _dob DATE,
+    _gender TEXT, _guardian_name TEXT, _guardian_contact TEXT,
+    _previous_school TEXT, _admission_date DATE, _admission_status_id BIGINT, _is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('students','update');
+
+    UPDATE students SET
+        first_name = COALESCE(_first_name, first_name),
+        last_name = COALESCE(_last_name, last_name),
+        date_of_birth = COALESCE(_dob, date_of_birth),
+        gender = COALESCE(_gender, gender),
+        guardian_name = COALESCE(_guardian_name, guardian_name),
+        guardian_contact = COALESCE(_guardian_contact, guardian_contact),
+        previous_school = COALESCE(_previous_school, previous_school),
+        admission_date = COALESCE(_admission_date, admission_date),
+        admission_status_id = COALESCE(_admission_status_id, admission_status_id),
+        is_active = COALESCE(_is_active, is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_student(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('students','delete');
+
+    UPDATE students
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_student(_id BIGINT) RETURNS SETOF students AS $$
+BEGIN
+    PERFORM require_permission('students','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM students
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all records for current school)
+CREATE OR REPLACE FUNCTION list_students() RETURNS SETOF students AS $$
+BEGIN
+    PERFORM require_permission('students','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM students
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List students by admission status
+CREATE OR REPLACE FUNCTION list_students_by_status(_status_id BIGINT) RETURNS SETOF students AS $$
+BEGIN
+    PERFORM require_permission('students','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM students
+    WHERE school_id = current_school_id()
+      AND admission_status_id = _status_id
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List students admitted in a given date range
+CREATE OR REPLACE FUNCTION list_students_by_admission_date(_start DATE, _end DATE) RETURNS SETOF students AS $$
+BEGIN
+    PERFORM require_permission('students','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM students
+    WHERE school_id = current_school_id()
+      AND admission_date BETWEEN _start AND _end
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Summary counts
+CREATE OR REPLACE FUNCTION report_student_counts() RETURNS TABLE (
+    total_students BIGINT,
+    active_students BIGINT,
+    deleted_students BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('students','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_students,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_students,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_students
+    FROM students
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON students TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_student(BIGINT,TEXT,TEXT,DATE,TEXT,TEXT,TEXT,TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_student(BIGINT,TEXT,TEXT,DATE,TEXT,TEXT,TEXT,TEXT,DATE,BIGINT,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_student(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_student(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_students() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_students_by_status(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_students_by_admission_date(DATE,DATE) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_student_counts() TO authenticated;
+
+
+-- ============================================
+-- Bit 8: workflows (Configurable Policies + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS workflows (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    type VARCHAR(50) NOT NULL,   -- e.g., grading_policy, onboarding_checklist
+    name VARCHAR(100) NOT NULL,  -- e.g., S1 Grading Scale
+    config JSONB NOT NULL,       -- e.g., {"A": {"min":90,"max":100}, "B": {"min":80,"max":89}}
+    is_active BOOLEAN DEFAULT TRUE,   -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE, -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(school_id, type, name)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE workflows ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='workflows' AND policyname='workflows_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY workflows_isolation ON workflows';
+    END IF;
+END$$;
+
+CREATE POLICY workflows_isolation ON workflows
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_workflows_school_type ON workflows(school_id, type);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_workflows_updated_at ON workflows;
+CREATE TRIGGER trg_workflows_updated_at
+BEFORE UPDATE ON workflows
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_workflows_audit ON workflows;
+CREATE TRIGGER trg_workflows_audit
+AFTER INSERT OR UPDATE OR DELETE ON workflows
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_workflow(
+    _school_id BIGINT,_type TEXT,_name TEXT,_config JSONB,_is_active BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('workflows','insert');
+
+    INSERT INTO workflows (school_id,type,name,config,is_active,created_by)
+    VALUES (_school_id,_type,_name,_config,COALESCE(_is_active,TRUE),current_user_id())
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_workflow(
+    _id BIGINT,_name TEXT,_config JSONB,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('workflows','update');
+
+    UPDATE workflows SET
+        name = COALESCE(_name,name),
+        config = COALESCE(_config,config),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_workflow(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('workflows','delete');
+
+    UPDATE workflows
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_workflow(_id BIGINT) RETURNS SETOF workflows AS $$
+BEGIN
+    PERFORM require_permission('workflows','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM workflows
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all workflows for current school)
+CREATE OR REPLACE FUNCTION list_workflows() RETURNS SETOF workflows AS $$
+BEGIN
+    PERFORM require_permission('workflows','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM workflows
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- Example: list workflows by type (e.g., grading_policy)
+CREATE OR REPLACE FUNCTION list_workflows_by_type(_type TEXT) RETURNS SETOF workflows AS $$
+BEGIN
+    PERFORM require_permission('workflows','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM workflows
+    WHERE school_id = current_school_id()
+      AND type = _type
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Example: list active workflows only
+CREATE OR REPLACE FUNCTION list_active_workflows() RETURNS SETOF workflows AS $$
+BEGIN
+    PERFORM require_permission('workflows','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM workflows
+    WHERE school_id = current_school_id()
+      AND is_active = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON workflows TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_workflow(BIGINT,TEXT,TEXT,JSONB,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_workflow(BIGINT,TEXT,JSONB,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_workflow(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_workflow(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_workflows() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_workflows_by_type(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_active_workflows() TO authenticated;
+
+
+-- ============================================
+-- Bit 9: auditlogs (Immutable Audit Trail with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS auditlogs (
+    id BIGSERIAL PRIMARY KEY,
+    role_id BIGINT,
+    permission_resource VARCHAR(100),
+    diff JSONB,
+    school_id BIGINT DEFAULT 0, -- 0 = global/system
+    user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    action VARCHAR(50) NOT NULL CHECK (action IN ('INSERT','UPDATE','DELETE')),
+    resource_type VARCHAR(50) NOT NULL,
+    resource_id BIGINT,
+    old_value JSONB,
+    new_value JSONB,
+    ip_address INET,
+    user_agent TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_active BOOLEAN DEFAULT TRUE,
+    is_deleted BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    CONSTRAINT chk_school_id_nonnegative CHECK (school_id >= 0)
+);
+
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE auditlogs ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='auditlogs' AND policyname='auditlogs_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY auditlogs_isolation ON auditlogs';
+    END IF;
+END$$;
+
+CREATE POLICY auditlogs_isolation ON auditlogs
+    FOR ALL TO authenticated
+    USING (
+        (school_id = current_school_id() OR school_id = 0)
+        AND NOT is_deleted
+    )
+    WITH CHECK (
+        (school_id = current_school_id() OR school_id = 0)
+        AND NOT is_deleted
+    );
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_auditlogs_school ON auditlogs(school_id);
+CREATE INDEX IF NOT EXISTS idx_auditlogs_user ON auditlogs(user_id);
+CREATE INDEX IF NOT EXISTS idx_auditlogs_resource ON auditlogs(resource_type, resource_id);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_auditlogs_updated_at ON auditlogs;
+CREATE TRIGGER trg_auditlogs_updated_at
+BEFORE UPDATE ON auditlogs
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Note: do NOT attach log_audit() to auditlogs itself (avoid recursion)
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_audit_log(
+    _school_id BIGINT,_user_id BIGINT,_action TEXT,_resource_type TEXT,_resource_id BIGINT,
+    _old_value JSONB,_new_value JSONB,_ip_address INET,_user_agent TEXT
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('auditlogs','insert');
+
+    INSERT INTO auditlogs (
+        school_id,user_id,action,resource_type,resource_id,
+        old_value,new_value,ip_address,user_agent,created_by
+    )
+    VALUES (
+        COALESCE(_school_id,0), -- default to 0 for global/system
+        _user_id,_action,_resource_type,_resource_id,
+        _old_value,_new_value,_ip_address,_user_agent,current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE (rare, lifecycle toggles)
+CREATE OR REPLACE FUNCTION update_audit_log(
+    _id BIGINT,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('auditlogs','update');
+
+    UPDATE auditlogs SET
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id 
+      AND (school_id = current_school_id() OR school_id = 0)
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_audit_log(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('auditlogs','delete');
+
+    UPDATE auditlogs
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id 
+      AND (school_id = current_school_id() OR school_id = 0)
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper
+CREATE OR REPLACE FUNCTION select_audit_log(_id BIGINT) RETURNS SETOF auditlogs AS $$
+BEGIN
+    PERFORM require_permission('auditlogs','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM auditlogs
+    WHERE id = _id 
+      AND (school_id = current_school_id() OR school_id = 0)
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper
+CREATE OR REPLACE FUNCTION list_auditlogs() RETURNS SETOF auditlogs AS $$
+BEGIN
+    PERFORM require_permission('auditlogs','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM auditlogs
+    WHERE (school_id = current_school_id() OR school_id = 0)
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- Summary counts
+CREATE OR REPLACE FUNCTION report_auditlogs_summary() RETURNS TABLE (
+    total_logs BIGINT,
+    active_logs BIGINT,
+    deleted_logs BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('auditlogs','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_logs,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_logs,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_logs
+    FROM auditlogs
+    WHERE (school_id = current_school_id() OR school_id = 0);
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Logs by resource type
+CREATE OR REPLACE FUNCTION report_auditlogs_by_resource() RETURNS TABLE (
+    resource_type TEXT,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('auditlogs','view');
+
+    RETURN QUERY
+    SELECT resource_type,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM auditlogs
+    WHERE (school_id = current_school_id() OR school_id = 0)
+    GROUP BY resource_type;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON auditlogs TO authenticated;
+
+GRANT EXECUTE ON FUNCTION insert_audit_log(BIGINT,BIGINT,TEXT,TEXT,BIGINT,JSONB,JSONB,INET,TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_audit_log(BIGINT,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_audit_log(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION select_audit_log(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_auditlogs() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_auditlogs_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_auditlogs_by_resource() TO authenticated;
+
+-- ============================================
+-- Bit 9: api_keys (Integration Keys + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    name VARCHAR(100) NOT NULL,        -- e.g., M-Pesa Integration
+    key_hash TEXT NOT NULL,            -- SHA-256 of key (never store raw key!)
+    scopes TEXT[] NOT NULL,            -- e.g., ['fee.read', 'payment.write']
+    expires_at TIMESTAMPTZ,            -- NULL = never expire
+    last_used TIMESTAMPTZ,
+    is_active BOOLEAN DEFAULT TRUE,    -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,  -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(school_id, name)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='api_keys' AND policyname='api_keys_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY api_keys_isolation ON api_keys';
+    END IF;
+END$$;
+
+CREATE POLICY api_keys_isolation ON api_keys
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_api_keys_school_name ON api_keys(school_id, name);
+CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(school_id) WHERE is_active = TRUE AND is_deleted = FALSE;
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_api_keys_updated_at ON api_keys;
+CREATE TRIGGER trg_api_keys_updated_at
+BEFORE UPDATE ON api_keys
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_api_keys_audit ON api_keys;
+CREATE TRIGGER trg_api_keys_audit
+AFTER INSERT OR UPDATE OR DELETE ON api_keys
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_api_key(
+    _school_id BIGINT,_name TEXT,_key_hash TEXT,_scopes TEXT[],_expires_at TIMESTAMPTZ
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('api_keys','insert');
+
+    INSERT INTO api_keys (school_id,name,key_hash,scopes,expires_at,is_active,created_by)
+    VALUES (_school_id,_name,_key_hash,_scopes,_expires_at,TRUE,current_user_id())
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_api_key(
+    _id BIGINT,_name TEXT,_scopes TEXT[],_expires_at TIMESTAMPTZ,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('api_keys','update');
+
+    UPDATE api_keys SET
+        name = COALESCE(_name,name),
+        scopes = COALESCE(_scopes,scopes),
+        expires_at = COALESCE(_expires_at,expires_at),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_api_key(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('api_keys','delete');
+
+    UPDATE api_keys
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_api_key(_id BIGINT) RETURNS SETOF api_keys AS $$
+BEGIN
+    PERFORM require_permission('api_keys','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM api_keys
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all keys for current school)
+CREATE OR REPLACE FUNCTION list_api_keys() RETURNS SETOF api_keys AS $$
+BEGIN
+    PERFORM require_permission('api_keys','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM api_keys
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List active API keys
+CREATE OR REPLACE FUNCTION list_active_api_keys() RETURNS SETOF api_keys AS $$
+BEGIN
+    PERFORM require_permission('api_keys','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM api_keys
+    WHERE school_id = current_school_id()
+      AND is_active = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List expired API keys
+CREATE OR REPLACE FUNCTION list_expired_api_keys() RETURNS SETOF api_keys AS $$
+BEGIN
+    PERFORM require_permission('api_keys','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM api_keys
+    WHERE school_id = current_school_id()
+      AND expires_at IS NOT NULL
+      AND expires_at < NOW()
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_api_keys_summary() RETURNS TABLE (
+    total_keys BIGINT,
+    active_keys BIGINT,
+    expired_keys BIGINT,
+    deleted_keys BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('api_keys','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_keys,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_keys,
+           COUNT(*) FILTER (WHERE expires_at IS NOT NULL AND expires_at < NOW() AND is_deleted = FALSE) AS expired_keys,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_keys
+    FROM api_keys
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON api_keys TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_api_key(BIGINT,TEXT,TEXT,TEXT[],TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_api_key(BIGINT,TEXT,TEXT[],TIMESTAMPTZ,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_api_key(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_api_key(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_api_keys() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_active_api_keys() TO authenticated;
+GRANT EXECUTE ON FUNCTION list_expired_api_keys() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_api_keys_summary() TO authenticated;
+
+
+-- ============================================
+-- Bit 10: custom_fields (Dynamic Schema Extensions with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS custom_fields (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    entity_type VARCHAR(50) NOT NULL,   -- e.g., student, staff, guardian
+    field_name VARCHAR(100) NOT NULL,   -- e.g., ib_cas_hours, blood_group
+    field_type VARCHAR(20) NOT NULL,    -- text, number, date, boolean, select
+    options TEXT[],                     -- for select: ['A+', 'A', 'B+', ...]
+    is_required BOOLEAN DEFAULT FALSE,
+    default_value TEXT,
+    is_active BOOLEAN DEFAULT TRUE,     -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,   -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(school_id, entity_type, field_name)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE custom_fields ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='custom_fields' AND policyname='custom_fields_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY custom_fields_isolation ON custom_fields';
+    END IF;
+END$$;
+
+CREATE POLICY custom_fields_isolation ON custom_fields
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_custom_fields_school_entity 
+    ON custom_fields(school_id, entity_type);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_custom_fields_updated_at ON custom_fields;
+CREATE TRIGGER trg_custom_fields_updated_at
+BEFORE UPDATE ON custom_fields
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_custom_fields_audit ON custom_fields;
+CREATE TRIGGER trg_custom_fields_audit
+AFTER INSERT OR UPDATE OR DELETE ON custom_fields
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_custom_field(
+    _school_id BIGINT,_entity_type TEXT,_field_name TEXT,_field_type TEXT,
+    _options TEXT[],_is_required BOOLEAN,_default_value TEXT
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('custom_fields','insert');
+
+    INSERT INTO custom_fields (
+        school_id,entity_type,field_name,field_type,options,
+        is_required,default_value,is_active,created_by
+    )
+    VALUES (
+        _school_id,_entity_type,_field_name,_field_type,_options,
+        COALESCE(_is_required,FALSE),_default_value,TRUE,current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_custom_field(
+    _id BIGINT,_field_name TEXT,_field_type TEXT,_options TEXT[],
+    _is_required BOOLEAN,_default_value TEXT,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('custom_fields','update');
+
+    UPDATE custom_fields SET
+        field_name = COALESCE(_field_name,field_name),
+        field_type = COALESCE(_field_type,field_type),
+        options = COALESCE(_options,options),
+        is_required = COALESCE(_is_required,is_required),
+        default_value = COALESCE(_default_value,default_value),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_custom_field(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('custom_fields','delete');
+
+    UPDATE custom_fields
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_custom_field(_id BIGINT) RETURNS SETOF custom_fields AS $$
+BEGIN
+    PERFORM require_permission('custom_fields','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM custom_fields
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all fields for an entity type)
+CREATE OR REPLACE FUNCTION list_custom_fields(_entity_type TEXT) RETURNS SETOF custom_fields AS $$
+BEGIN
+    PERFORM require_permission('custom_fields','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM custom_fields
+    WHERE school_id = current_school_id()
+      AND entity_type = _entity_type
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_custom_fields_summary() RETURNS TABLE (
+    total_fields BIGINT,
+    active_fields BIGINT,
+    deleted_fields BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('custom_fields','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_fields,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_fields,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_fields
+    FROM custom_fields
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: fields grouped by entity type
+CREATE OR REPLACE FUNCTION report_custom_fields_by_entity() RETURNS TABLE (
+    entity_type TEXT,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('custom_fields','view');
+
+    RETURN QUERY
+    SELECT entity_type,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM custom_fields
+    WHERE school_id = current_school_id()
+    GROUP BY entity_type;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON custom_fields TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_custom_field(BIGINT,TEXT,TEXT,TEXT,TEXT[],BOOLEAN,TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_custom_field(BIGINT,TEXT,TEXT,TEXT[],BOOLEAN,TEXT,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_custom_field(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_custom_field(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_custom_fields(TEXT) TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION report_custom_fields_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_custom_fields_by_entity() TO authenticated;
+
+
+
+-- ============================================
+-- Bit 11: custom_field_values (Dynamic Values with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS custom_field_values (
+    id BIGSERIAL PRIMARY KEY,
+    custom_field_id BIGINT NOT NULL REFERENCES custom_fields(id) ON DELETE CASCADE,
+    entity_id BIGINT NOT NULL, -- e.g., student.id = 1001
+    value_text TEXT,
+    value_number NUMERIC,
+    value_date DATE,
+    value_bool BOOLEAN,
+    is_active BOOLEAN DEFAULT TRUE, -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE, -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(custom_field_id, entity_id)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE custom_field_values ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='custom_field_values' AND policyname='custom_field_values_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY custom_field_values_isolation ON custom_field_values';
+    END IF;
+END$$;
+
+CREATE POLICY custom_field_values_isolation ON custom_field_values
+    FOR ALL TO authenticated
+    USING (
+        NOT is_deleted
+        AND EXISTS (
+            SELECT 1 FROM custom_fields cf
+            WHERE cf.id = custom_field_values.custom_field_id
+              AND cf.school_id = current_school_id()
+              AND cf.is_deleted = FALSE
+        )
+    )
+    WITH CHECK (
+        NOT is_deleted
+        AND EXISTS (
+            SELECT 1 FROM custom_fields cf
+            WHERE cf.id = custom_field_values.custom_field_id
+              AND cf.school_id = current_school_id()
+              AND cf.is_deleted = FALSE
+        )
+    );
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_custom_field_values_field_entity 
+    ON custom_field_values(custom_field_id, entity_id);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_custom_field_values_updated_at ON custom_field_values;
+CREATE TRIGGER trg_custom_field_values_updated_at
+BEFORE UPDATE ON custom_field_values
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_custom_field_values_audit ON custom_field_values;
+CREATE TRIGGER trg_custom_field_values_audit
+AFTER INSERT OR UPDATE OR DELETE ON custom_field_values
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_custom_field_value(
+    _custom_field_id BIGINT,_entity_id BIGINT,
+    _value_text TEXT,_value_number NUMERIC,_value_date DATE,_value_bool BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('custom_field_values','insert');
+
+    INSERT INTO custom_field_values (
+        custom_field_id,entity_id,value_text,value_number,value_date,value_bool,
+        is_active,created_by
+    )
+    VALUES (
+        _custom_field_id,_entity_id,_value_text,_value_number,_value_date,_value_bool,
+        TRUE,current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_custom_field_value(
+    _id BIGINT,_value_text TEXT,_value_number NUMERIC,_value_date DATE,_value_bool BOOLEAN,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('custom_field_values','update');
+
+    UPDATE custom_field_values SET
+        value_text = COALESCE(_value_text,value_text),
+        value_number = COALESCE(_value_number,value_number),
+        value_date = COALESCE(_value_date,value_date),
+        value_bool = COALESCE(_value_bool,value_bool),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_custom_field_value(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('custom_field_values','delete');
+
+    UPDATE custom_field_values
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_custom_field_value(_id BIGINT) RETURNS SETOF custom_field_values AS $$
+BEGIN
+    PERFORM require_permission('custom_field_values','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM custom_field_values
+    WHERE id = _id AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all values for a given entity)
+CREATE OR REPLACE FUNCTION list_custom_field_values(_entity_id BIGINT) RETURNS SETOF custom_field_values AS $$
+BEGIN
+    PERFORM require_permission('custom_field_values','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM custom_field_values
+    WHERE entity_id = _entity_id AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_custom_field_values_summary() RETURNS TABLE (
+    total_values BIGINT,
+    active_values BIGINT,
+    deleted_values BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('custom_field_values','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_values,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_values,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_values
+    FROM custom_field_values;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: values grouped by custom field
+CREATE OR REPLACE FUNCTION report_custom_field_values_by_field() RETURNS TABLE (
+    custom_field_id BIGINT,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('custom_field_values','view');
+
+    RETURN QUERY
+    SELECT custom_field_id,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM custom_field_values
+    GROUP BY custom_field_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON custom_field_values TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_custom_field_value(BIGINT,BIGINT,TEXT,NUMERIC,DATE,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_custom_field_value(BIGINT,TEXT,NUMERIC,DATE,BOOLEAN,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_custom_field_value(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_custom_field_value(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_custom_field_values(BIGINT) TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION report_custom_field_values_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_custom_field_values_by_field() TO authenticated;
+
+
+-- ============================================
+-- Bit 12: dashboards (User Dashboards + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS dashboards (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Owner
+    name VARCHAR(100) NOT NULL, -- e.g., Admin Overview
+    layout JSONB NOT NULL,      -- {widgets: [{type: 'attendance_kpi', x:0, y:0, w:4, h:2}]}
+    is_default BOOLEAN DEFAULT FALSE, -- Only one per user
+    is_active BOOLEAN DEFAULT TRUE,   -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE, -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(user_id, name)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE dashboards ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='dashboards' AND policyname='dashboards_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY dashboards_isolation ON dashboards';
+    END IF;
+END$$;
+
+CREATE POLICY dashboards_isolation ON dashboards
+    FOR ALL TO authenticated
+    USING (user_id = current_user_id() AND NOT is_deleted)
+    WITH CHECK (user_id = current_user_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_dashboards_user ON dashboards(user_id);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_dashboards_updated_at ON dashboards;
+CREATE TRIGGER trg_dashboards_updated_at
+BEFORE UPDATE ON dashboards
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_dashboards_audit ON dashboards;
+CREATE TRIGGER trg_dashboards_audit
+AFTER INSERT OR UPDATE OR DELETE ON dashboards
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_dashboard(
+    _user_id BIGINT,_name TEXT,_layout JSONB,_is_default BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('dashboards','insert');
+
+    INSERT INTO dashboards (user_id,name,layout,is_default,is_active,created_by)
+    VALUES (_user_id,_name,_layout,COALESCE(_is_default,FALSE),TRUE,current_user_id())
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_dashboard(
+    _id BIGINT,_name TEXT,_layout JSONB,_is_default BOOLEAN,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('dashboards','update');
+
+    UPDATE dashboards SET
+        name = COALESCE(_name,name),
+        layout = COALESCE(_layout,layout),
+        is_default = COALESCE(_is_default,is_default),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND user_id = current_user_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_dashboard(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('dashboards','delete');
+
+    UPDATE dashboards
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND user_id = current_user_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_dashboard(_id BIGINT) RETURNS SETOF dashboards AS $$
+BEGIN
+    PERFORM require_permission('dashboards','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM dashboards
+    WHERE id = _id AND user_id = current_user_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all dashboards for current user)
+CREATE OR REPLACE FUNCTION list_dashboards() RETURNS SETOF dashboards AS $$
+BEGIN
+    PERFORM require_permission('dashboards','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM dashboards
+    WHERE user_id = current_user_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List active dashboards
+CREATE OR REPLACE FUNCTION list_active_dashboards() RETURNS SETOF dashboards AS $$
+BEGIN
+    PERFORM require_permission('dashboards','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM dashboards
+    WHERE user_id = current_user_id()
+      AND is_active = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Get default dashboard (only one per user)
+CREATE OR REPLACE FUNCTION get_default_dashboard() RETURNS SETOF dashboards AS $$
+BEGIN
+    PERFORM require_permission('dashboards','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM dashboards
+    WHERE user_id = current_user_id()
+      AND is_default = TRUE
+      AND is_deleted = FALSE
+    LIMIT 1;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_dashboards_summary() RETURNS TABLE (
+    total_dashboards BIGINT,
+    active_dashboards BIGINT,
+    deleted_dashboards BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('dashboards','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_dashboards,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_dashboards,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_dashboards
+    FROM dashboards
+    WHERE user_id = current_user_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON dashboards TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_dashboard(BIGINT,TEXT,JSONB,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_dashboard(BIGINT,TEXT,JSONB,BOOLEAN,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_dashboard(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_dashboard(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_dashboards() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_active_dashboards() TO authenticated;
+GRANT EXECUTE ON FUNCTION get_default_dashboard() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_dashboards_summary() TO authenticated;
+
+
+-- ============================================
+-- Bit 13: kpi_definitions (Analytics KPIs + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS kpi_definitions (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    name VARCHAR(100) NOT NULL,        -- e.g., Fee Collection Rate
+    query_template TEXT NOT NULL,      -- Parametrized SQL executed securely in app
+    refresh_rate INTERVAL DEFAULT '1 hour', -- e.g., '1 hour'
+    is_active BOOLEAN DEFAULT TRUE,    -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,  -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(school_id, name)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE kpi_definitions ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='kpi_definitions' AND policyname='kpi_definitions_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY kpi_definitions_isolation ON kpi_definitions';
+    END IF;
+END$$;
+
+CREATE POLICY kpi_definitions_isolation ON kpi_definitions
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_kpi_definitions_school_name 
+    ON kpi_definitions(school_id, name);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_kpi_definitions_updated_at ON kpi_definitions;
+CREATE TRIGGER trg_kpi_definitions_updated_at
+BEFORE UPDATE ON kpi_definitions
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_kpi_definitions_audit ON kpi_definitions;
+CREATE TRIGGER trg_kpi_definitions_audit
+AFTER INSERT OR UPDATE OR DELETE ON kpi_definitions
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_kpi_definition(
+    _school_id BIGINT,_name TEXT,_query_template TEXT,_refresh_rate INTERVAL
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('kpi_definitions','insert');
+
+    INSERT INTO kpi_definitions (school_id,name,query_template,refresh_rate,is_active,created_by)
+    VALUES (_school_id,_name,_query_template,COALESCE(_refresh_rate,'1 hour'),TRUE,current_user_id())
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_kpi_definition(
+    _id BIGINT,_name TEXT,_query_template TEXT,_refresh_rate INTERVAL,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('kpi_definitions','update');
+
+    UPDATE kpi_definitions SET
+        name = COALESCE(_name,name),
+        query_template = COALESCE(_query_template,query_template),
+        refresh_rate = COALESCE(_refresh_rate,refresh_rate),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_kpi_definition(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('kpi_definitions','delete');
+
+    UPDATE kpi_definitions
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_kpi_definition(_id BIGINT) RETURNS SETOF kpi_definitions AS $$
+BEGIN
+    PERFORM require_permission('kpi_definitions','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM kpi_definitions
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all KPIs for current school)
+CREATE OR REPLACE FUNCTION list_kpi_definitions() RETURNS SETOF kpi_definitions AS $$
+BEGIN
+    PERFORM require_permission('kpi_definitions','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM kpi_definitions
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List active KPIs
+CREATE OR REPLACE FUNCTION list_active_kpi_definitions() RETURNS SETOF kpi_definitions AS $$
+BEGIN
+    PERFORM require_permission('kpi_definitions','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM kpi_definitions
+    WHERE school_id = current_school_id()
+      AND is_active = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List KPIs by refresh rate threshold
+CREATE OR REPLACE FUNCTION list_kpi_definitions_by_refresh(_interval INTERVAL) RETURNS SETOF kpi_definitions AS $$
+BEGIN
+    PERFORM require_permission('kpi_definitions','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM kpi_definitions
+    WHERE school_id = current_school_id()
+      AND refresh_rate <= _interval
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_kpi_definitions_summary() RETURNS TABLE (
+    total_kpis BIGINT,
+    active_kpis BIGINT,
+    deleted_kpis BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('kpi_definitions','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_kpis,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_kpis,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_kpis
+    FROM kpi_definitions
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: KPIs grouped by refresh rate
+CREATE OR REPLACE FUNCTION report_kpi_definitions_by_refresh() RETURNS TABLE (
+    refresh_rate INTERVAL,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('kpi_definitions','view');
+
+    RETURN QUERY
+    SELECT refresh_rate,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM kpi_definitions
+    WHERE school_id = current_school_id()
+    GROUP BY refresh_rate;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON kpi_definitions TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_kpi_definition(BIGINT,TEXT,TEXT,INTERVAL) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_kpi_definition(BIGINT,TEXT,TEXT,INTERVAL,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_kpi_definition(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_kpi_definition(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_kpi_definitions() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_active_kpi_definitions() TO authenticated;
+GRANT EXECUTE ON FUNCTION list_kpi_definitions_by_refresh(INTERVAL) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_kpi_definitions_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_kpi_definitions_by_refresh() TO authenticated;
+
+
+-- ============================================
+-- Bit 14: notifications (Multi-channel Alerts + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,     -- Recipient
+    type VARCHAR(30) NOT NULL,        -- info, warning, alert
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    is_read BOOLEAN DEFAULT FALSE,
+    sent_at TIMESTAMPTZ DEFAULT NOW(),
+    channel VARCHAR(20) NOT NULL DEFAULT 'in_app', -- in_app, email, sms, whatsapp
+    is_active BOOLEAN DEFAULT TRUE,   -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE, -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='notifications' AND policyname='notifications_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY notifications_isolation ON notifications';
+    END IF;
+END$$;
+
+CREATE POLICY notifications_isolation ON notifications
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_school ON notifications(school_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_channel ON notifications(channel);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_notifications_updated_at ON notifications;
+CREATE TRIGGER trg_notifications_updated_at
+BEFORE UPDATE ON notifications
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_notifications_audit ON notifications;
+CREATE TRIGGER trg_notifications_audit
+AFTER INSERT OR UPDATE OR DELETE ON notifications
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_notification(
+    _school_id BIGINT,_user_id BIGINT,_type TEXT,_title TEXT,_body TEXT,_channel TEXT
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('notifications','insert');
+
+    INSERT INTO notifications (
+        school_id,user_id,type,title,body,channel,is_active,created_by
+    )
+    VALUES (
+        _school_id,_user_id,_type,_title,_body,COALESCE(_channel,'in_app'),TRUE,current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- MARK READ
+CREATE OR REPLACE FUNCTION mark_notification_read(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('notifications','update');
+
+    UPDATE notifications
+    SET is_read = TRUE,
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_notification(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('notifications','delete');
+
+    UPDATE notifications
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_notification(_id BIGINT) RETURNS SETOF notifications AS $$
+BEGIN
+    PERFORM require_permission('notifications','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM notifications
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all notifications for current school)
+CREATE OR REPLACE FUNCTION list_notifications() RETURNS SETOF notifications AS $$
+BEGIN
+    PERFORM require_permission('notifications','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM notifications
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List unread notifications for a user
+CREATE OR REPLACE FUNCTION list_unread_notifications(_user_id BIGINT) RETURNS SETOF notifications AS $$
+BEGIN
+    PERFORM require_permission('notifications','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM notifications
+    WHERE school_id = current_school_id()
+      AND user_id = _user_id
+      AND is_read = FALSE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List notifications by channel
+CREATE OR REPLACE FUNCTION list_notifications_by_channel(_channel TEXT) RETURNS SETOF notifications AS $$
+BEGIN
+    PERFORM require_permission('notifications','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM notifications
+    WHERE school_id = current_school_id()
+      AND channel = _channel
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_notifications_summary() RETURNS TABLE (
+    total_notifications BIGINT,
+    unread_notifications BIGINT,
+    active_notifications BIGINT,
+    deleted_notifications BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('notifications','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_notifications,
+           COUNT(*) FILTER (WHERE is_read = FALSE AND is_deleted = FALSE) AS unread_notifications,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_notifications,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_notifications
+    FROM notifications
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: notifications grouped by channel
+CREATE OR REPLACE FUNCTION report_notifications_by_channel() RETURNS TABLE (
+    channel TEXT,
+    total BIGINT,
+    unread BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('notifications','view');
+
+    RETURN QUERY
+    SELECT channel,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_read = FALSE AND is_deleted = FALSE) AS unread,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM notifications
+    WHERE school_id = current_school_id()
+    GROUP BY channel;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON notifications TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_notification(BIGINT,BIGINT,TEXT,TEXT,TEXT,TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION mark_notification_read(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_notification(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_notification(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_notifications() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_unread_notifications(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_notifications_by_channel(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_notifications_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_notifications_by_channel() TO authenticated;
+
+
+-- ============================================
+-- Bit 15: activity_feed (System Activity Log + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS activity_feed (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    actor_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,    -- Who performed the action
+    action VARCHAR(50) NOT NULL,        -- e.g., created_invoice, marked_attendance
+    target_type VARCHAR(50) NOT NULL,   -- e.g., student, class, invoice
+    target_id BIGINT NOT NULL,
+    details JSONB,                      -- Context: {"grade": "S1", "score": 85}
+    is_active BOOLEAN DEFAULT TRUE,     -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,   -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE activity_feed ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='activity_feed' AND policyname='activity_feed_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY activity_feed_isolation ON activity_feed';
+    END IF;
+END$$;
+
+CREATE POLICY activity_feed_isolation ON activity_feed
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_activity_feed_school ON activity_feed(school_id);
+CREATE INDEX IF NOT EXISTS idx_activity_feed_actor ON activity_feed(actor_id);
+CREATE INDEX IF NOT EXISTS idx_activity_feed_target ON activity_feed(target_type, target_id);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_activity_feed_updated_at ON activity_feed;
+CREATE TRIGGER trg_activity_feed_updated_at
+BEFORE UPDATE ON activity_feed
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_activity_feed_audit ON activity_feed;
+CREATE TRIGGER trg_activity_feed_audit
+AFTER INSERT OR UPDATE OR DELETE ON activity_feed
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_activity_feed(
+    _school_id BIGINT,_actor_id BIGINT,_action TEXT,_target_type TEXT,_target_id BIGINT,_details JSONB
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('activity_feed','insert');
+
+    INSERT INTO activity_feed (
+        school_id,actor_id,action,target_type,target_id,details,
+        is_active,created_by
+    )
+    VALUES (
+        _school_id,_actor_id,_action,_target_type,_target_id,_details,
+        TRUE,current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_activity_feed(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('activity_feed','delete');
+
+    UPDATE activity_feed
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_activity_feed(_id BIGINT) RETURNS SETOF activity_feed AS $$
+BEGIN
+    PERFORM require_permission('activity_feed','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM activity_feed
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all records for current school)
+CREATE OR REPLACE FUNCTION list_activity_feed() RETURNS SETOF activity_feed AS $$
+BEGIN
+    PERFORM require_permission('activity_feed','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM activity_feed
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List feed entries by actor
+CREATE OR REPLACE FUNCTION list_activity_feed_by_actor(_actor_id BIGINT) RETURNS SETOF activity_feed AS $$
+BEGIN
+    PERFORM require_permission('activity_feed','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM activity_feed
+    WHERE school_id = current_school_id()
+      AND actor_id = _actor_id
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List feed entries by action type
+CREATE OR REPLACE FUNCTION list_activity_feed_by_action(_action TEXT) RETURNS SETOF activity_feed AS $$
+BEGIN
+    PERFORM require_permission('activity_feed','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM activity_feed
+    WHERE school_id = current_school_id()
+      AND action = _action
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_activity_feed_summary() RETURNS TABLE (
+    total_entries BIGINT,
+    active_entries BIGINT,
+    deleted_entries BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('activity_feed','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_entries,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_entries,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_entries
+    FROM activity_feed
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: entries grouped by action type
+CREATE OR REPLACE FUNCTION report_activity_feed_by_action() RETURNS TABLE (
+    action TEXT,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('activity_feed','view');
+
+    RETURN QUERY
+    SELECT action,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM activity_feed
+    WHERE school_id = current_school_id()
+    GROUP BY action;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON activity_feed TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_activity_feed(BIGINT,BIGINT,TEXT,TEXT,BIGINT,JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_activity_feed(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_activity_feed(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_activity_feed() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_activity_feed_by_actor(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_activity_feed_by_action(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_activity_feed_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_activity_feed_by_action() TO authenticated;
+
+
+-- ============================================
+-- Bit 16: inquiries (Parent/Guardian inquiries + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS inquiries (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    parent_id BIGINT REFERENCES users(id) ON DELETE SET NULL,           -- Parent/Guardian raising inquiries
+    student_id BIGINT REFERENCES users(id) ON DELETE SET NULL,          -- Optional: linked student
+    subject VARCHAR(150) NOT NULL,                                      -- e.g., "Fee Payment Clarification"
+    message TEXT NOT NULL,
+    status VARCHAR(20) DEFAULT 'open',                                  -- open, in_progress, resolved, closed
+    priority VARCHAR(20) DEFAULT 'normal',                              -- low, normal, high, urgent
+    assigned_to BIGINT REFERENCES users(id) ON DELETE SET NULL,         -- Staff handling inquiries
+    resolution TEXT,
+    is_active BOOLEAN DEFAULT TRUE,                                     -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,                                   -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE inquiries ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='inquiries' AND policyname='inquiries_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY inquiries_isolation ON inquiries';
+    END IF;
+END$$;
+
+CREATE POLICY inquiries_isolation ON inquiries
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_inquiries_school_status ON inquiries(school_id, status);
+CREATE INDEX IF NOT EXISTS idx_inquiries_parent_student ON inquiries(parent_id, student_id);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_inquiries_updated_at ON inquiries;
+CREATE TRIGGER trg_inquiries_updated_at
+BEFORE UPDATE ON inquiries
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_inquiries_audit ON inquiries;
+CREATE TRIGGER trg_inquiries_audit
+AFTER INSERT OR UPDATE OR DELETE ON inquiries
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_inquiries(
+    _school_id BIGINT,_parent_id BIGINT,_student_id BIGINT,_subject TEXT,_message TEXT,_priority TEXT
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('inquiries','insert');
+
+    INSERT INTO inquiries (
+        school_id,parent_id,student_id,subject,message,priority,is_active,created_by
+    )
+    VALUES (
+        _school_id,_parent_id,_student_id,_subject,_message,COALESCE(_priority,'normal'),TRUE,current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_inquiries(
+    _id BIGINT,_status TEXT,_assigned_to BIGINT,_resolution TEXT,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('inquiries','update');
+
+    UPDATE inquiries SET
+        status = COALESCE(_status,status),
+        assigned_to = COALESCE(_assigned_to,assigned_to),
+        resolution = COALESCE(_resolution,resolution),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_inquiries(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('inquiries','delete');
+
+    UPDATE inquiries
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_inquiries(_id BIGINT) RETURNS SETOF inquiries AS $$
+BEGIN
+    PERFORM require_permission('inquiries','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM inquiries
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all inquiries for current school)
+CREATE OR REPLACE FUNCTION list_inquiries() RETURNS SETOF inquiries AS $$
+BEGIN
+    PERFORM require_permission('inquiries','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM inquiries
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List inquiries by status
+CREATE OR REPLACE FUNCTION list_inquiries_by_status(_status TEXT) RETURNS SETOF inquiries AS $$
+BEGIN
+    PERFORM require_permission('inquiries','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM inquiries
+    WHERE school_id = current_school_id()
+      AND status = _status
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List inquiries by priority
+CREATE OR REPLACE FUNCTION list_inquiries_by_priority(_priority TEXT) RETURNS SETOF inquiries AS $$
+BEGIN
+    PERFORM require_permission('inquiries','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM inquiries
+    WHERE school_id = current_school_id()
+      AND priority = _priority
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_inquiries_summary() RETURNS TABLE (
+    total_inquiries BIGINT,
+    open_inquiries BIGINT,
+    in_progress_inquiries BIGINT,
+    resolved_inquiries BIGINT,
+    closed_inquiries BIGINT,
+    deleted_inquiries BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('inquiries','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_inquiries,
+           COUNT(*) FILTER (WHERE status = 'open' AND is_deleted = FALSE) AS open_inquiries,
+           COUNT(*) FILTER (WHERE status = 'in_progress' AND is_deleted = FALSE) AS in_progress_inquiries,
+           COUNT(*) FILTER (WHERE status = 'resolved' AND is_deleted = FALSE) AS resolved_inquiries,
+           COUNT(*) FILTER (WHERE status = 'closed' AND is_deleted = FALSE) AS closed_inquiries,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_inquiries
+    FROM inquiries
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: inquiries grouped by priority
+CREATE OR REPLACE FUNCTION report_inquiries_by_priority() RETURNS TABLE (
+    priority TEXT,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('inquiries','view');
+
+    RETURN QUERY
+    SELECT priority,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM inquiries
+    WHERE school_id = current_school_id()
+    GROUP BY priority;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON inquiries TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_inquiries(BIGINT,BIGINT,BIGINT,TEXT,TEXT,TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_inquiries(BIGINT,TEXT,BIGINT,TEXT,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_inquiries(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_inquiries(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_inquiries() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_inquiries_by_status(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_inquiries_by_priority(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_inquiries_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_inquiries_by_priority() TO authenticated;
+
+
+-- ============================================
+-- Bit 17: messages (Direct + Group Messaging with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS messages (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    sender_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    recipient_id BIGINT REFERENCES users(id) ON DELETE CASCADE,         -- NULL if group/broadcast
+    group_id BIGINT,                                                    -- optional: for group chats
+    subject VARCHAR(150),
+    body TEXT NOT NULL,
+    channel VARCHAR(20) DEFAULT 'in_app',                               -- in_app, email, sms, whatsapp
+    status VARCHAR(20) DEFAULT 'sent',                                  -- sent, delivered, read, failed
+    sent_at TIMESTAMPTZ DEFAULT NOW(),
+    read_at TIMESTAMPTZ,
+    is_active BOOLEAN DEFAULT TRUE,                                     -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,                                   -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='messages' AND policyname='messages_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY messages_isolation ON messages';
+    END IF;
+END$$;
+
+CREATE POLICY messages_isolation ON messages
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_messages_school_sender ON messages(school_id, sender_id);
+CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id);
+CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_id);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_messages_updated_at ON messages;
+CREATE TRIGGER trg_messages_updated_at
+BEFORE UPDATE ON messages
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_messages_audit ON messages;
+CREATE TRIGGER trg_messages_audit
+AFTER INSERT OR UPDATE OR DELETE ON messages
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_message(
+    _school_id BIGINT,_sender_id BIGINT,_recipient_id BIGINT,_group_id BIGINT,_subject TEXT,_body TEXT,_channel TEXT
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('messages','insert');
+
+    INSERT INTO messages (
+        school_id,sender_id,recipient_id,group_id,subject,body,channel,
+        is_active,created_by
+    )
+    VALUES (
+        _school_id,_sender_id,_recipient_id,_group_id,_subject,_body,
+        COALESCE(_channel,'in_app'),TRUE,current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- MARK READ
+CREATE OR REPLACE FUNCTION mark_message_read(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('messages','update');
+
+    UPDATE messages
+    SET status = 'read',
+        read_at = NOW(),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_message(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('messages','delete');
+
+    UPDATE messages
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_message(_id BIGINT) RETURNS SETOF messages AS $$
+BEGIN
+    PERFORM require_permission('messages','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM messages
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all messages for current school)
+CREATE OR REPLACE FUNCTION list_messages() RETURNS SETOF messages AS $$
+BEGIN
+    PERFORM require_permission('messages','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM messages
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List messages by sender
+CREATE OR REPLACE FUNCTION list_messages_by_sender(_sender_id BIGINT) RETURNS SETOF messages AS $$
+BEGIN
+    PERFORM require_permission('messages','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM messages
+    WHERE school_id = current_school_id()
+      AND sender_id = _sender_id
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List unread messages for a recipient
+CREATE OR REPLACE FUNCTION list_unread_messages(_recipient_id BIGINT) RETURNS SETOF messages AS $$
+BEGIN
+    PERFORM require_permission('messages','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM messages
+    WHERE school_id = current_school_id()
+      AND recipient_id = _recipient_id
+      AND status <> 'read'
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_messages_summary() RETURNS TABLE (
+    total_messages BIGINT,
+    sent_messages BIGINT,
+    delivered_messages BIGINT,
+    read_messages BIGINT,
+    failed_messages BIGINT,
+    deleted_messages BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('messages','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_messages,
+           COUNT(*) FILTER (WHERE status = 'sent' AND is_deleted = FALSE) AS sent_messages,
+           COUNT(*) FILTER (WHERE status = 'delivered' AND is_deleted = FALSE) AS delivered_messages,
+           COUNT(*) FILTER (WHERE status = 'read' AND is_deleted = FALSE) AS read_messages,
+           COUNT(*) FILTER (WHERE status = 'failed' AND is_deleted = FALSE) AS failed_messages,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_messages
+    FROM messages
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: messages grouped by channel
+CREATE OR REPLACE FUNCTION report_messages_by_channel() RETURNS TABLE (
+    channel TEXT,
+    total BIGINT,
+    read BIGINT,
+    unread BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('messages','view');
+
+    RETURN QUERY
+    SELECT channel,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE status = 'read' AND is_deleted = FALSE) AS read,
+           COUNT(*) FILTER (WHERE status <> 'read' AND is_deleted = FALSE) AS unread,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM messages
+    WHERE school_id = current_school_id()
+    GROUP BY channel;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON messages TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_message(BIGINT,BIGINT,BIGINT,BIGINT,TEXT,TEXT,TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION mark_message_read(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_message(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_message(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_messages() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_messages_by_sender(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_unread_messages(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_messages_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_messages_by_channel() TO authenticated;
+
+
+-- ============================================
+-- Bit 18: files (File Storage + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS files (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    owner_id BIGINT REFERENCES users(id) ON DELETE SET NULL,            -- uploader
+    name VARCHAR(200) NOT NULL,
+    description TEXT,
+    file_type VARCHAR(50) NOT NULL,                                     -- pdf, docx, image, video, etc.
+    mime_type VARCHAR(100),
+    size BIGINT,                                                        -- in bytes
+    storage_url TEXT NOT NULL,                                          -- secure location (S3, GCS, etc.)
+    is_public BOOLEAN DEFAULT FALSE,
+    uploaded_at TIMESTAMPTZ DEFAULT NOW(),
+    is_active BOOLEAN DEFAULT TRUE,                                     -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,                                   -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE files ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='files' AND policyname='files_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY files_isolation ON files';
+    END IF;
+END$$;
+
+CREATE POLICY files_isolation ON files
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_files_school_owner ON files(school_id, owner_id);
+CREATE INDEX IF NOT EXISTS idx_files_type ON files(file_type);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_files_updated_at ON files;
+CREATE TRIGGER trg_files_updated_at
+BEFORE UPDATE ON files
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_files_audit ON files;
+CREATE TRIGGER trg_files_audit
+AFTER INSERT OR UPDATE OR DELETE ON files
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_file(
+    _school_id BIGINT,_owner_id BIGINT,_name TEXT,_description TEXT,
+    _file_type TEXT,_mime_type TEXT,_size BIGINT,_storage_url TEXT,_is_public BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('files','insert');
+
+    INSERT INTO files (
+        school_id,owner_id,name,description,file_type,mime_type,size,storage_url,
+        is_public,is_active,created_by
+    )
+    VALUES (
+        _school_id,_owner_id,_name,_description,_file_type,_mime_type,_size,_storage_url,
+        COALESCE(_is_public,FALSE),TRUE,current_user_id()
+    )
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_file(
+    _id BIGINT,_description TEXT,_is_public BOOLEAN,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('files','update');
+
+    UPDATE files SET
+        description = COALESCE(_description,description),
+        is_public = COALESCE(_is_public,is_public),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_file(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('files','delete');
+
+    UPDATE files
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_file(_id BIGINT) RETURNS SETOF files AS $$
+BEGIN
+    PERFORM require_permission('files','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM files
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all files for current school)
+CREATE OR REPLACE FUNCTION list_files() RETURNS SETOF files AS $$
+BEGIN
+    PERFORM require_permission('files','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM files
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List public files
+CREATE OR REPLACE FUNCTION list_public_files() RETURNS SETOF files AS $$
+BEGIN
+    PERFORM require_permission('files','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM files
+    WHERE school_id = current_school_id()
+      AND is_public = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List files by type
+CREATE OR REPLACE FUNCTION list_files_by_type(_file_type TEXT) RETURNS SETOF files AS $$
+BEGIN
+    PERFORM require_permission('files','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM files
+    WHERE school_id = current_school_id()
+      AND file_type = _file_type
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_files_summary() RETURNS TABLE (
+    total_files BIGINT,
+    public_files BIGINT,
+    private_files BIGINT,
+    active_files BIGINT,
+    deleted_files BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('files','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_files,
+           COUNT(*) FILTER (WHERE is_public = TRUE AND is_deleted = FALSE) AS public_files,
+           COUNT(*) FILTER (WHERE is_public = FALSE AND is_deleted = FALSE) AS private_files,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_files,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_files
+    FROM files
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: files grouped by type
+CREATE OR REPLACE FUNCTION report_files_by_type() RETURNS TABLE (
+    file_type TEXT,
+    total BIGINT,
+    public BIGINT,
+    private BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('files','view');
+
+    RETURN QUERY
+    SELECT file_type,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_public = TRUE AND is_deleted = FALSE) AS public,
+           COUNT(*) FILTER (WHERE is_public = FALSE AND is_deleted = FALSE) AS private,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM files
+    WHERE school_id = current_school_id()
+    GROUP BY file_type;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: files grouped by owner
+CREATE OR REPLACE FUNCTION report_files_by_owner() RETURNS TABLE (
+    owner_id BIGINT,
+    total BIGINT,
+    public BIGINT,
+    private BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('files','view');
+
+    RETURN QUERY
+    SELECT owner_id,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_public = TRUE AND is_deleted = FALSE) AS public,
+           COUNT(*) FILTER (WHERE is_public = FALSE AND is_deleted = FALSE) AS private,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM files
+    WHERE school_id = current_school_id()
+    GROUP BY owner_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON files TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_file(BIGINT,BIGINT,TEXT,TEXT,TEXT,TEXT,BIGINT,TEXT,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_file(BIGINT,TEXT,BOOLEAN,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_file(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_file(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_files() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_public_files() TO authenticated;
+GRANT EXECUTE ON FUNCTION list_files_by_type(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_files_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_files_by_type() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_files_by_owner() TO authenticated;
+
+
+-- ============================================
+-- Bit 19: file_shares (File Sharing + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS file_shares (
+    id BIGSERIAL PRIMARY KEY,
+    file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    shared_with BIGINT REFERENCES users(id) ON DELETE CASCADE, -- recipient
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',            -- read, write, owner
+    expires_at TIMESTAMPTZ,                                   -- optional expiry
+    is_active BOOLEAN DEFAULT TRUE,                           -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,                         -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(file_id, shared_with)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE file_shares ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='file_shares' AND policyname='file_shares_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY file_shares_isolation ON file_shares';
+    END IF;
+END$$;
+
+CREATE POLICY file_shares_isolation ON file_shares
+    FOR ALL TO authenticated
+    USING (
+        NOT is_deleted
+        AND EXISTS (
+            SELECT 1 FROM files f
+            WHERE f.id = file_shares.file_id
+              AND f.school_id = current_school_id()
+              AND f.is_deleted = FALSE
+        )
+    )
+    WITH CHECK (
+        NOT is_deleted
+        AND EXISTS (
+            SELECT 1 FROM files f
+            WHERE f.id = file_shares.file_id
+              AND f.school_id = current_school_id()
+              AND f.is_deleted = FALSE
+        )
+    );
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_file_shares_file ON file_shares(file_id);
+CREATE INDEX IF NOT EXISTS idx_file_shares_shared_with ON file_shares(shared_with);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_file_shares_updated_at ON file_shares;
+CREATE TRIGGER trg_file_shares_updated_at
+BEFORE UPDATE ON file_shares
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_file_shares_audit ON file_shares;
+CREATE TRIGGER trg_file_shares_audit
+AFTER INSERT OR UPDATE OR DELETE ON file_shares
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_file_share(
+    _file_id BIGINT,_shared_with BIGINT,_permission TEXT,_expires_at TIMESTAMPTZ
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('file_shares','insert');
+
+    INSERT INTO file_shares (file_id,shared_with,permission,expires_at,is_active,created_by)
+    VALUES (_file_id,_shared_with,COALESCE(_permission,'read'),_expires_at,TRUE,current_user_id())
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_file_share(
+    _id BIGINT,_permission TEXT,_expires_at TIMESTAMPTZ,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('file_shares','update');
+
+    UPDATE file_shares SET
+        permission = COALESCE(_permission,permission),
+        expires_at = COALESCE(_expires_at,expires_at),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_file_share(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('file_shares','delete');
+
+    UPDATE file_shares
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_file_share(_id BIGINT) RETURNS SETOF file_shares AS $$
+BEGIN
+    PERFORM require_permission('file_shares','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM file_shares
+    WHERE id = _id AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all shares for a given file)
+CREATE OR REPLACE FUNCTION list_file_shares(_file_id BIGINT) RETURNS SETOF file_shares AS $$
+BEGIN
+    PERFORM require_permission('file_shares','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM file_shares
+    WHERE file_id = _file_id AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List active shares by recipient
+CREATE OR REPLACE FUNCTION list_file_shares_by_user(_user_id BIGINT) RETURNS SETOF file_shares AS $$
+BEGIN
+    PERFORM require_permission('file_shares','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM file_shares
+    WHERE shared_with = _user_id
+      AND is_active = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List expired shares
+CREATE OR REPLACE FUNCTION list_expired_file_shares() RETURNS SETOF file_shares AS $$
+BEGIN
+    PERFORM require_permission('file_shares','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM file_shares
+    WHERE expires_at IS NOT NULL
+      AND expires_at < NOW()
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_file_shares_summary() RETURNS TABLE (
+    total_shares BIGINT,
+    active_shares BIGINT,
+    expired_shares BIGINT,
+    deleted_shares BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('file_shares','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_shares,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_shares,
+           COUNT(*) FILTER (WHERE expires_at IS NOT NULL AND expires_at < NOW() AND is_deleted = FALSE) AS expired_shares,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_shares
+    FROM file_shares fs
+    WHERE EXISTS (
+        SELECT 1 FROM files f
+        WHERE f.id = fs.file_id
+          AND f.school_id = current_school_id()
+          AND f.is_deleted = FALSE
+    );
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: shares grouped by permission type
+CREATE OR REPLACE FUNCTION report_file_shares_by_permission() RETURNS TABLE (
+    permission TEXT,
+    total BIGINT,
+    active BIGINT,
+    expired BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('file_shares','view');
+
+    RETURN QUERY
+    SELECT permission,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE expires_at IS NOT NULL AND expires_at < NOW() AND is_deleted = FALSE) AS expired,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM file_shares fs
+    WHERE EXISTS (
+        SELECT 1 FROM files f
+        WHERE f.id = fs.file_id
+          AND f.school_id = current_school_id()
+          AND f.is_deleted = FALSE
+    )
+    GROUP BY permission;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: shares grouped by recipient
+CREATE OR REPLACE FUNCTION report_file_shares_by_user() RETURNS TABLE (
+    shared_with BIGINT,
+    total BIGINT,
+    active BIGINT,
+    expired BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('file_shares','view');
+
+    RETURN QUERY
+    SELECT shared_with,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE expires_at IS NOT NULL AND expires_at < NOW() AND is_deleted = FALSE) AS expired,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM file_shares fs
+    WHERE EXISTS (
+        SELECT 1 FROM files f
+        WHERE f.id = fs.file_id
+          AND f.school_id = current_school_id()
+          AND f.is_deleted = FALSE
+    )
+    GROUP BY shared_with;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON file_shares TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_file_share(BIGINT,BIGINT,TEXT,TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_file_share(BIGINT,TEXT,TIMESTAMPTZ,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_file_share(BIGINT) TO authenticated;
+
+-- ============================================
+-- Bit 20: settings (School Configuration + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS settings (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    category VARCHAR(50) NOT NULL,   -- e.g., academics, finance, notifications
+    key VARCHAR(100) NOT NULL,       -- e.g., grading_scale, currency, sms_gateway
+    value TEXT NOT NULL,             -- stored as text, parsed by app
+    is_active BOOLEAN DEFAULT TRUE,  -- ✅ lifecycle toggle
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,-- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(school_id, category, key)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='settings' AND policyname='settings_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY settings_isolation ON settings';
+    END IF;
+END$$;
+
+CREATE POLICY settings_isolation ON settings
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_settings_school_category ON settings(school_id, category);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_settings_updated_at ON settings;
+CREATE TRIGGER trg_settings_updated_at
+BEFORE UPDATE ON settings
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_settings_audit ON settings;
+CREATE TRIGGER trg_settings_audit
+AFTER INSERT OR UPDATE OR DELETE ON settings
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+CREATE OR REPLACE FUNCTION insert_setting(
+    _school_id BIGINT,_category TEXT,_key TEXT,_value TEXT,_is_active BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('settings','insert');
+
+    INSERT INTO settings (school_id,category,key,value,is_active,created_by)
+    VALUES (_school_id,_category,_key,_value,COALESCE(_is_active,TRUE),current_user_id())
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION update_setting(
+    _id BIGINT,_value TEXT,_is_active BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('settings','update');
+
+    UPDATE settings SET
+        value = COALESCE(_value,value),
+        is_active = COALESCE(_is_active,is_active),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION soft_delete_setting(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('settings','delete');
+
+    UPDATE settings
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION select_setting(_id BIGINT) RETURNS SETOF settings AS $$
+BEGIN
+    PERFORM require_permission('settings','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM settings
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION list_settings() RETURNS SETOF settings AS $$
+BEGIN
+    PERFORM require_permission('settings','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM settings
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+CREATE OR REPLACE FUNCTION list_settings_by_category(_category TEXT) RETURNS SETOF settings AS $$
+BEGIN
+    PERFORM require_permission('settings','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM settings
+    WHERE school_id = current_school_id()
+      AND category = _category
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION list_active_settings() RETURNS SETOF settings AS $$
+BEGIN
+    PERFORM require_permission('settings','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM settings
+    WHERE school_id = current_school_id()
+      AND is_active = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION report_settings_summary() RETURNS TABLE (
+    total_settings BIGINT,
+    active_settings BIGINT,
+    deleted_settings BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('settings','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_settings,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_settings,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_settings
+    FROM settings
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION report_settings_by_category() RETURNS TABLE (
+    category TEXT,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('settings','view');
+
+    RETURN QUERY
+    SELECT category,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM settings
+    WHERE school_id = current_school_id()
+    GROUP BY category;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON settings TO authenticated;
+
+GRANT EXECUTE ON FUNCTION insert_setting(BIGINT,TEXT,TEXT,TEXT,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_setting(BIGINT,TEXT,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_setting(BIGINT) TO authenticated;
+
+GRANT EXECUTE ON FUNCTION select_setting(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_settings() TO authenticated;
+
+GRANT EXECUTE ON FUNCTION list_settings_by_category(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_active_settings() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_settings_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_settings_by_category() TO authenticated;
+
+-- ============================================
+-- Bit 21: integrations (External System Integrations + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS integrations (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    name VARCHAR(100) NOT NULL,        -- e.g., "M-Pesa", "Google Classroom"
+    type VARCHAR(50) NOT NULL,         -- finance, academics, communication, etc.
+    config JSONB NOT NULL,             -- {"api_key":"...", "endpoint":"..."}
+    is_active BOOLEAN DEFAULT TRUE,    -- ✅ lifecycle toggle
+    last_synced TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,  -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(school_id, name)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE integrations ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='integrations' AND policyname='integrations_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY integrations_isolation ON integrations';
+    END IF;
+END$$;
+
+CREATE POLICY integrations_isolation ON integrations
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_integrations_school_name ON integrations(school_id, name);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_integrations_updated_at ON integrations;
+CREATE TRIGGER trg_integrations_updated_at
+BEFORE UPDATE ON integrations
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_integrations_audit ON integrations;
+CREATE TRIGGER trg_integrations_audit
+AFTER INSERT OR UPDATE OR DELETE ON integrations
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_integration(
+    _school_id BIGINT,_name TEXT,_type TEXT,_config JSONB,_is_active BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('integrations','insert');
+
+    INSERT INTO integrations (school_id,name,type,config,is_active,created_by)
+    VALUES (_school_id,_name,_type,_config,COALESCE(_is_active,TRUE),current_user_id())
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_integration(
+    _id BIGINT,_config JSONB,_is_active BOOLEAN,_last_synced TIMESTAMPTZ
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('integrations','update');
+
+    UPDATE integrations SET
+        config = COALESCE(_config,config),
+        is_active = COALESCE(_is_active,is_active),
+        last_synced = COALESCE(_last_synced,last_synced),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_integration(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('integrations','delete');
+
+    UPDATE integrations
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_integration(_id BIGINT) RETURNS SETOF integrations AS $$
+BEGIN
+    PERFORM require_permission('integrations','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM integrations
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all integrations for current school)
+CREATE OR REPLACE FUNCTION list_integrations() RETURNS SETOF integrations AS $$
+BEGIN
+    PERFORM require_permission('integrations','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM integrations
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List active integrations
+CREATE OR REPLACE FUNCTION list_active_integrations() RETURNS SETOF integrations AS $$
+BEGIN
+    PERFORM require_permission('integrations','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM integrations
+    WHERE school_id = current_school_id()
+      AND is_active = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List integrations by type
+CREATE OR REPLACE FUNCTION list_integrations_by_type(_type TEXT) RETURNS SETOF integrations AS $$
+BEGIN
+    PERFORM require_permission('integrations','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM integrations
+    WHERE school_id = current_school_id()
+      AND type = _type
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_integrations_summary() RETURNS TABLE (
+    total_integrations BIGINT,
+    active_integrations BIGINT,
+    deleted_integrations BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('integrations','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_integrations,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_integrations,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_integrations
+    FROM integrations
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: integrations grouped by type
+CREATE OR REPLACE FUNCTION report_integrations_by_type() RETURNS TABLE (
+    type TEXT,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('integrations','view');
+
+    RETURN QUERY
+    SELECT type,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM integrations
+    WHERE school_id = current_school_id()
+    GROUP BY type;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: integrations with last sync status
+CREATE OR REPLACE FUNCTION report_integrations_last_synced() RETURNS TABLE (
+    name TEXT,
+    type TEXT,
+    last_synced TIMESTAMPTZ,
+    is_active BOOLEAN
+) AS $$
+BEGIN
+    PERFORM require_permission('integrations','view');
+
+    RETURN QUERY
+    SELECT name, type, last_synced, is_active
+    FROM integrations
+    WHERE school_id = current_school_id()
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON integrations TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_integration(BIGINT,TEXT,TEXT,JSONB,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_integration(BIGINT,JSONB,BOOLEAN,TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_integration(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_integration(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_integrations() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_active_integrations() TO authenticated;
+GRANT EXECUTE ON FUNCTION list_integrations_by_type(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_integrations_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_integrations_by_type() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_integrations_last_synced() TO authenticated;
+
+
+-- ============================================
+-- Bit 22: webhooks (Event Callbacks + Lifecycle with Permissions)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS webhooks (
+    id BIGSERIAL PRIMARY KEY,
+    school_id BIGINT NOT NULL REFERENCES schools(id) ON DELETE CASCADE, -- ✅ tenant isolation
+    name VARCHAR(100) NOT NULL,        -- e.g., "Fee Payment Callback"
+    url TEXT NOT NULL,                 -- target endpoint
+    event VARCHAR(50) NOT NULL,        -- e.g., "payment.success", "student.enrolled"
+    secret TEXT,                       -- optional signing secret
+    is_active BOOLEAN DEFAULT TRUE,    -- ✅ lifecycle toggle
+    last_triggered TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by BIGINT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by BIGINT,
+    is_deleted BOOLEAN DEFAULT FALSE,  -- ✅ soft delete
+    deleted_at TIMESTAMPTZ,
+    deleted_by BIGINT,
+    UNIQUE(school_id, event, name)
+);
+
+-- ============================================
+-- RLS
+-- ============================================
+ALTER TABLE webhooks ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename='webhooks' AND policyname='webhooks_isolation'
+    ) THEN
+        EXECUTE 'DROP POLICY webhooks_isolation ON webhooks';
+    END IF;
+END$$;
+
+CREATE POLICY webhooks_isolation ON webhooks
+    FOR ALL TO authenticated
+    USING (school_id = current_school_id() AND NOT is_deleted)
+    WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- Indexes
+-- ============================================
+CREATE INDEX IF NOT EXISTS idx_webhooks_school_event ON webhooks(school_id, event);
+
+-- ============================================
+-- Triggers
+-- ============================================
+DROP TRIGGER IF EXISTS trg_webhooks_updated_at ON webhooks;
+CREATE TRIGGER trg_webhooks_updated_at
+BEFORE UPDATE ON webhooks
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_webhooks_audit ON webhooks;
+CREATE TRIGGER trg_webhooks_audit
+AFTER INSERT OR UPDATE OR DELETE ON webhooks
+FOR EACH ROW EXECUTE FUNCTION log_audit();
+
+-- ============================================
+-- CRUD Functions with Permission Checks
+-- ============================================
+
+-- INSERT
+CREATE OR REPLACE FUNCTION insert_webhook(
+    _school_id BIGINT,_name TEXT,_url TEXT,_event TEXT,_secret TEXT,_is_active BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE new_id BIGINT;
+BEGIN
+    PERFORM require_permission('webhooks','insert');
+
+    INSERT INTO webhooks (school_id,name,url,event,secret,is_active,created_by)
+    VALUES (_school_id,_name,_url,_event,_secret,COALESCE(_is_active,TRUE),current_user_id())
+    RETURNING id INTO new_id;
+
+    RETURN new_id;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- UPDATE
+CREATE OR REPLACE FUNCTION update_webhook(
+    _id BIGINT,_url TEXT,_secret TEXT,_is_active BOOLEAN,_last_triggered TIMESTAMPTZ
+) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('webhooks','update');
+
+    UPDATE webhooks SET
+        url = COALESCE(_url,url),
+        secret = COALESCE(_secret,secret),
+        is_active = COALESCE(_is_active,is_active),
+        last_triggered = COALESCE(_last_triggered,last_triggered),
+        updated_at = NOW(),
+        updated_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SOFT DELETE
+CREATE OR REPLACE FUNCTION soft_delete_webhook(_id BIGINT) RETURNS VOID AS $$
+BEGIN
+    PERFORM require_permission('webhooks','delete');
+
+    UPDATE webhooks
+    SET is_deleted = TRUE,
+        deleted_at = NOW(),
+        deleted_by = current_user_id()
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- SELECT wrapper (single record)
+CREATE OR REPLACE FUNCTION select_webhook(_id BIGINT) RETURNS SETOF webhooks AS $$
+BEGIN
+    PERFORM require_permission('webhooks','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM webhooks
+    WHERE id = _id AND school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- LIST wrapper (all webhooks for current school)
+CREATE OR REPLACE FUNCTION list_webhooks() RETURNS SETOF webhooks AS $$
+BEGIN
+    PERFORM require_permission('webhooks','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM webhooks
+    WHERE school_id = current_school_id() AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Reporting/Export Functions
+-- ============================================
+
+-- List active webhooks
+CREATE OR REPLACE FUNCTION list_active_webhooks() RETURNS SETOF webhooks AS $$
+BEGIN
+    PERFORM require_permission('webhooks','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM webhooks
+    WHERE school_id = current_school_id()
+      AND is_active = TRUE
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- List webhooks by event type
+CREATE OR REPLACE FUNCTION list_webhooks_by_event(_event TEXT) RETURNS SETOF webhooks AS $$
+BEGIN
+    PERFORM require_permission('webhooks','view');
+
+    RETURN QUERY
+    SELECT *
+    FROM webhooks
+    WHERE school_id = current_school_id()
+      AND event = _event
+      AND is_deleted = FALSE;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: summary counts
+CREATE OR REPLACE FUNCTION report_webhooks_summary() RETURNS TABLE (
+    total_webhooks BIGINT,
+    active_webhooks BIGINT,
+    deleted_webhooks BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('webhooks','view');
+
+    RETURN QUERY
+    SELECT COUNT(*) AS total_webhooks,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active_webhooks,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted_webhooks
+    FROM webhooks
+    WHERE school_id = current_school_id();
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Report: webhooks grouped by event
+CREATE OR REPLACE FUNCTION report_webhooks_by_event() RETURNS TABLE (
+    event TEXT,
+    total BIGINT,
+    active BIGINT,
+    deleted BIGINT
+) AS $$
+BEGIN
+    PERFORM require_permission('webhooks','view');
+
+    RETURN QUERY
+    SELECT event,
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE is_active = TRUE AND is_deleted = FALSE) AS active,
+           COUNT(*) FILTER (WHERE is_deleted = TRUE) AS deleted
+    FROM webhooks
+    WHERE school_id = current_school_id()
+    GROUP BY event;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================
+-- Grants
+-- ============================================
+GRANT SELECT, INSERT, UPDATE ON webhooks TO authenticated;
+
+-- CRUD functions
+GRANT EXECUTE ON FUNCTION insert_webhook(BIGINT,TEXT,TEXT,TEXT,TEXT,BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_webhook(BIGINT,TEXT,TEXT,BOOLEAN,TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION soft_delete_webhook(BIGINT) TO authenticated;
+
+-- Read wrappers
+GRANT EXECUTE ON FUNCTION select_webhook(BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION list_webhooks() TO authenticated;
+
+-- Reporting/export functions
+GRANT EXECUTE ON FUNCTION list_active_webhooks() TO authenticated;
+GRANT EXECUTE ON FUNCTION list_webhooks_by_event(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION report_webhooks_summary() TO authenticated;
+GRANT EXECUTE ON FUNCTION report_webhooks_by_event() TO authenticated;
+
+
+-- ⚙️ Optimization Pack for Core Infra
+-- Common helper functions, RLS policies, indexes, enums, audit logging, and constraints
+
+-- ============================================
+-- 1. Ensure updated_at always refreshes
+-- ============================================
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Grant usage
+GRANT EXECUTE ON FUNCTION set_updated_at() TO authenticated;
+
+-- ============================================
+-- 2. School Isolation in RLS
+-- ============================================
+DROP POLICY IF EXISTS users_isolation ON users;
+
+CREATE POLICY users_isolation ON users
+FOR ALL TO authenticated
+USING (school_id = current_school_id() AND NOT is_deleted)
+WITH CHECK (school_id = current_school_id() AND NOT is_deleted);
+
+-- ============================================
+-- 3. Composite & Partial Indexes
+-- ============================================
+
+-- Composite indexes for joins
+CREATE INDEX IF NOT EXISTS idx_user_roles_user_role 
+    ON user_roles(user_id, role_id);
+
+CREATE INDEX IF NOT EXISTS idx_role_permissions_role_perm 
+    ON role_permissions(role_id, permission_key);
+
+-- Partial indexes for active records
+CREATE INDEX IF NOT EXISTS idx_users_active 
+    ON users(id) WHERE is_deleted = FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_files_active 
+    ON files(id) WHERE is_deleted = FALSE;
+
+-- ============================================
+-- 4. Enums for Controlled Values
+-- ============================================
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'channel_type') THEN
+        CREATE TYPE channel_type AS ENUM ('in_app','email','sms','whatsapp');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'status_type') THEN
+        CREATE TYPE status_type AS ENUM ('pending','active','inactive','failed');
+    END IF;
+END$$;
+
+-- ============================================
+-- 6. Audit Logging Triggers
+-- ============================================
+CREATE OR REPLACE FUNCTION log_audit()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO auditlogs (
+    school_id,
+    user_id,
+    action,
+    table_name,
+    record_id,
+    old_values,
+    new_values,
+    created_by
+  )
+  VALUES (
+    current_school_id(),
+    current_user_id(),
+    TG_OP,
+    TG_TABLE_NAME,
+    COALESCE(NEW.id, OLD.id),
+    to_jsonb(OLD),
+    to_jsonb(NEW),
+    current_user_id()
+  );
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Grant usage
+GRANT EXECUTE ON FUNCTION log_audit() TO authenticated;
+
+-- ============================================
+-- 10. Settings & Integrations Constraints
+-- ============================================
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'integrations_unique') THEN
+        ALTER TABLE integrations ADD CONSTRAINT integrations_unique UNIQUE (school_id, name);
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'settings_unique') THEN
+        ALTER TABLE settings ADD CONSTRAINT settings_unique UNIQUE (school_id, key);
+    END IF;
+END $$;
+
+-- ============================================
+-- END
+-- ============================================
+

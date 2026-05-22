@@ -1,0 +1,37 @@
+import { z } from "zod";
+
+/**
+ * Resilient Snake_Case Validator
+ * Generated for Districts
+ */
+export const DistrictsSchema = z.object({
+  code: z.string().nullable(),
+  created_at: z.coerce.date().optional().nullable(),
+  deleted_at: z.coerce.date().optional().nullable(),
+  deleted_by: z.preprocess((val) => {
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }, z.coerce.number().optional().nullable()),
+  id: z.preprocess((val) => {
+          const num = Number(val);
+          return isNaN(num) ? undefined : num;
+        }, z.coerce.number().optional().nullable()),
+  is_active: z.union([z.boolean(), z.string(), z.number()])
+          .transform(val => {
+            if (typeof val === "boolean") return val;
+            if (typeof val === "number") return val === 1;
+            if (typeof val === "string") return ["true", "1", "yes", "on"].includes(val.trim().toLowerCase());
+            return true;
+          }).optional().default(true).nullable(),
+  is_deleted: z.union([z.boolean(), z.string(), z.number()])
+          .transform(val => {
+            if (typeof val === "boolean") return val;
+            if (typeof val === "number") return val === 1;
+            if (typeof val === "string") return ["true", "1", "yes", "on"].includes(val.trim().toLowerCase());
+            return false;
+          }).optional().default(false).nullable(),
+  name: z.string(),
+  updated_at: z.coerce.date().optional().nullable(),
+}).passthrough();
+
+export type DistrictsType = z.infer<typeof DistrictsSchema>;

@@ -1,0 +1,256 @@
+
+=== backend :: C:\Bright\ems\backend\package.json ===
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "scaffold": "tsx scripts/scaffoldDomainsFromPermissions.ts",
+    "sync-db": "tsx scripts/syncDb.ts",
+    "db:watch": "chokidar migrations/*.ts -c \"pnpm run db:sync\"",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.90.1",
+    "bcrypt": "^6.0.0",
+    "bullmq": "^5.66.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.1",
+    "express-rate-limit": "^8.2.1",
+    "express-validator": "^7.3.1",
+    "helmet": "^8.1.0",
+    "jose": "^6.1.3",
+    "kysely": "^0.28.10",
+    "node-cache": "^5.1.2",
+    "nodemailer": "^7.0.12",
+    "pino": "^10.2.1",
+    "postgres-interval": "^4.0.2"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/chokidar": "^2.1.7",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.21",
+    "@types/express-validator": "^3.0.2",
+    "@types/helmet": "^4.0.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^20.19.27",
+    "@types/node-cache": "^4.2.5",
+    "@types/nodemailer": "^7.0.5",
+    "@types/pg": "^8.16.0",
+    "@types/pino": "^7.0.5",
+    "chokidar": "^5.0.0",
+    "chokidar-cli": "^3.0.0",
+    "kysely-codegen": "^0.19.0",
+    "pg": "^8.16.3",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
+
+
+=== backend :: C:\Bright\ems\backend\tsconfig.json ===
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "../frontend", "../shared", "../scripts"]
+}
+
+
+=== frontend :: C:\Bright\ems\frontend\node_modules\.vite\deps\package.json ===
+{
+  "type": "module"
+}
+
+
+=== frontend :: C:\Bright\ems\frontend\node_modules\.vite\deps\_metadata.json ===
+{
+  "hash": "c1404f67",
+  "configHash": "7076255b",
+  "lockfileHash": "655e4ae9",
+  "browserHash": "6223451f",
+  "optimized": {
+    "react": {
+      "src": "../../../../node_modules/.pnpm/react@18.3.1/node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "c79bf334",
+      "needsInterop": true
+    },
+    "react-dom": {
+      "src": "../../../../node_modules/.pnpm/react-dom@18.3.1_react@18.3.1/node_modules/react-dom/index.js",
+      "file": "react-dom.js",
+      "fileHash": "92ff0d05",
+      "needsInterop": true
+    },
+    "react/jsx-dev-runtime": {
+      "src": "../../../../node_modules/.pnpm/react@18.3.1/node_modules/react/jsx-dev-runtime.js",
+      "file": "react_jsx-dev-runtime.js",
+      "fileHash": "841a9404",
+      "needsInterop": true
+    },
+    "react/jsx-runtime": {
+      "src": "../../../../node_modules/.pnpm/react@18.3.1/node_modules/react/jsx-runtime.js",
+      "file": "react_jsx-runtime.js",
+      "fileHash": "66564749",
+      "needsInterop": true
+    },
+    "@supabase/supabase-js": {
+      "src": "../../../../node_modules/.pnpm/@supabase+supabase-js@2.90.1/node_modules/@supabase/supabase-js/dist/index.mjs",
+      "file": "@supabase_supabase-js.js",
+      "fileHash": "2aec46d7",
+      "needsInterop": false
+    },
+    "react-dom/client": {
+      "src": "../../../../node_modules/.pnpm/react-dom@18.3.1_react@18.3.1/node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "9a6f4d0d",
+      "needsInterop": true
+    }
+  },
+  "chunks": {
+    "chunk-44XAMB3R": {
+      "file": "chunk-44XAMB3R.js"
+    },
+    "chunk-ZJ7JMHDK": {
+      "file": "chunk-ZJ7JMHDK.js"
+    },
+    "chunk-BUSYA2B4": {
+      "file": "chunk-BUSYA2B4.js"
+    }
+  }
+}
+
+=== frontend :: C:\Bright\ems\frontend\package.json ===
+{
+  "name": "frontend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ems/shared": "workspace:*",
+    "@supabase/supabase-js": "^2.90.1",
+    "axios": "^1.13.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/axios": "^0.14.4",
+    "@types/react": "^18.3.27",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21"
+  }
+}
+
+
+=== frontend :: C:\Bright\ems\frontend\tsconfig.json ===
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true,
+
+    // 👇 Updated for shared + src alias
+    "baseUrl": ".",
+    "paths": {
+      "@ems/shared": ["../shared/src/index.ts"],
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src", "vite-env.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}
+
+
+=== scripts :: C:\Bright\ems\scripts\package.json ===
+{
+  "name": "scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.90.1",
+    "dotenv": "^16.6.1",
+    "pg": "^8.11.0",
+    "tslib": "^2.6.2"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3",
+    "@types/chokidar": "2.1.7",
+    "@types/pg": "^8.16.0",
+    "chokidar": "^5.0.0"
+  },
+  "scripts": {
+    "migrate": "ts-node scripts/runMigrations.ts",
+    "sync:db": "ts-node scripts/syncDb.ts",
+    "sync:db:watch": "ts-node scripts/syncDb.ts --watch",
+    "sync:all": "ts-node scripts/masterSync.ts"
+  }
+}
+
+
+=== scripts :: C:\Bright\ems\scripts\tsconfig.json ===
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./",
+    "outDir": "../dist-scripts",
+    "noEmit": true
+  },
+  "include": ["*.ts", "**/*.ts"]
+}
+
+
+=== shared :: C:\Bright\ems\shared\package.json ===
+{
+  "name": "@ems/shared",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "private": true,
+  "dependencies": {
+    "kysely": "^0.28.10",
+    "pg": "^8.11.0"
+  }
+}
+
+
+=== shared :: C:\Bright\ems\shared\tsconfig.json ===
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist"
+  },
+  "include": ["src/**/*"]
+}
+
+
+=== combined :: C:\Bright\ems\combined\package.json ===
+{
+  "name": "combined",
+  "version": "1.0.0",
+  "type": "module"
+}
+

@@ -1,0 +1,14 @@
+export * as Aacommon from "./aacommon/index.js";
+export * as Academics from "./academics/index.js";
+export * as Admissions from "./admissions/index.js";
+export * as Assetsmgt from "./assetsmgt/index.js";
+export * as Attendances from "./attendances/index.js";
+export * as Audit from "./audit/index.js";
+export * as Communications from "./communications/index.js";
+export * as Filesmgt from "./filesmgt/index.js";
+export * as Profiles from "./profiles/index.js";
+export * as Staffmgt from "./staffmgt/index.js";
+export * as Storage from "./storage/index.js";
+export * as Studentsmgt from "./studentsmgt/index.js";
+export * as System from "./system/index.js";
+export * as Vault from "./vault/index.js";

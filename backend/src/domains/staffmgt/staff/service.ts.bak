@@ -1,0 +1,402 @@
+// Enhanced Multi-Tenant Service for Staff Management
+import { db } from "../../../config/infra/database.js";
+import { sql } from "kysely";
+import { StaffSchema } from "./validator.js";
+import { StaffType } from "./types.js";
+import { generateSchoolId, generateUsername } from "../../../utils/generateId.js";
+import bcrypt from "bcrypt";
+
+export interface UserContext {
+  schoolId: number;
+  userId?: number;
+}
+
+export class StaffService {
+   async findAll(context: UserContext, params?: any) {
+      let query = db
+        .selectFrom("staff as s")
+        .leftJoin("users as u", "u.id", "s.userId")
+        .leftJoin("departments as d", "d.id", "s.departmentId")
+        .leftJoin("staffmgtRoles as sr", "sr.id", "s.roleId")
+        .select([
+         "s.id",
+         "s.schoolId",
+         "s.userId",
+         "s.employeeNo",
+         "s.hireDate",
+         "s.departmentId",
+         "s.roleId",
+         "s.isActive",
+         "s.createdAt",
+         "s.updatedAt",
+         "u.firstName",
+         "u.lastName",
+         "u.email",
+         "u.phone",
+         "u.username",
+         "d.name as department_name",
+         "d.code as department_code",
+         "sr.name as role_name",
+         "sr.description as role_description",
+      ])
+       .where("s.schoolId", "=", context.schoolId)
+       .where("s.isDeleted", "=", false);
+
+    if (params?.search) {
+      const search = `%${params.search}%`;
+      query = query.where((eb: any) =>
+        eb.or([
+         eb("u.firstName", "like", search),
+         eb("u.lastName", "like", search),
+         eb("u.email", "like", search),
+         eb("s.employeeNo", "like", search),
+        ])
+      );
+    }
+    if (params?.departmentId) {
+       query = query.where("s.departmentId", "=", Number(params.departmentId));
+    }
+    if (params?.roleId) {
+       query = query.where("s.roleId", "=", Number(params.roleId));
+    }
+    if (params?.employment_status !== undefined) {
+      if (params.employment_status === 'active') {
+        query = query.where("s.isActive", "=", true);
+      } else if (params.employment_status === 'inactive') {
+        query = query.where("s.isActive", "=", false);
+      }
+    }
+    const page = Number(params?.page) || 1;
+    const limit = Number(params?.limit) || 15;
+    const offset = (page - 1) * limit;
+    
+    // Get total count
+    const countQuery = db
+      .selectFrom("staff as s")
+      .leftJoin("users as u", "u.id", "s.userId")
+      .leftJoin("departments as d", "d.id", "s.departmentId")
+      .leftJoin("staffmgtRoles as sr", "sr.id", "s.roleId")
+      .select(sql<number>`count(*)`.as("count"))
+      .where("s.schoolId", "=", context.schoolId)
+      .where("s.isDeleted", "=", false);
+
+    if (params?.search) {
+      const search = `%${params.search}%`;
+      countQuery.where((eb: any) =>
+        eb.or([
+         eb("u.firstName", "like", search),
+         eb("u.lastName", "like", search),
+         eb("u.email", "like", search),
+         eb("s.employeeNo", "like", search),
+        ])
+      );
+    }
+    if (params?.departmentId) {
+       countQuery.where("s.departmentId", "=", Number(params.departmentId));
+    }
+    if (params?.roleId) {
+       countQuery.where("s.roleId", "=", Number(params.roleId));
+    }
+    if (params?.employment_status !== undefined) {
+      if (params.employment_status === 'active') {
+        countQuery.where("s.isActive", "=", true);
+      } else if (params.employment_status === 'inactive') {
+        countQuery.where("s.isActive", "=", false);
+      }
+    }
+
+    const countResult = await countQuery.executeTakeFirst();
+    const total = Number(countResult?.count || 0);
+
+    const data = await query
+       .orderBy("s.createdAt", "desc")
+      .limit(limit)
+      .offset(offset)
+      .execute();
+
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      }
+    };
+  }
+   
+   async findById(context: UserContext, id: number | string) {
+     return await db
+       .selectFrom("staff as s")
+       .leftJoin("users as u", "u.id", "s.userId")
+       .leftJoin("departments as d", "d.id", "s.departmentId")
+       .leftJoin("staffmgtRoles as sr", "sr.id", "s.roleId")
+       .select([
+         "s.id", "s.schoolId", "s.userId", "s.employeeNo", "s.hireDate", "s.departmentId",
+          "s.roleId", "s.isActive", "s.createdAt", "s.updatedAt",
+          "u.firstName", "u.lastName", "u.email", "u.phone", "u.username",
+          "d.name as department_name", "sr.name as role_name", "sr.description as role_description",
+       ])
+       .where("s.id", "=", Number(id))
+       .where("s.schoolId", "=", context.schoolId)
+        .where("s.isDeleted", "=", false)
+       .executeTakeFirst();
+  }
+   
+  async create(context: UserContext, data: StaffType) {
+    try {
+      const processedData = { 
+        ...data, 
+        email: typeof data.email === 'string' ? data.email.trim().toLowerCase() : data.email, 
+        schoolId: context.schoolId 
+      };
+      
+      const validated = StaffSchema.parse(processedData);
+      const sharedId = await generateSchoolId(context.schoolId);
+      const passwordHash = data.password ? await bcrypt.hash(data.password, 10) : await bcrypt.hash('Staff@123', 10);
+      
+      const user: any = await db.insertInto("users").values({ 
+        id: sharedId, 
+        schoolId: context.schoolId, 
+        firstName: (validated as any).firstName, 
+        lastName: (validated as any).lastName, 
+        email: validated.email, 
+        phone: (validated as any).phone, 
+        username: (validated as any).username || generateUsername(sharedId), 
+        password: passwordHash, 
+        isActive: true, 
+        isDeleted: false, 
+        createdBy: context.userId 
+      }).returningAll().executeTakeFirstOrThrow();
+      
+      const staff: any = await db.insertInto("staff").values({ 
+        id: sharedId, 
+        schoolId: context.schoolId, 
+        userId: sharedId, 
+        employeeNo: (validated as any).employeeNo, 
+        hireDate: (validated as any).hireDate, 
+        departmentId: (validated as any).departmentId, 
+        roleId: (validated as any).roleId, 
+        isActive: true, 
+        isDeleted: false, 
+        createdBy: context.userId 
+      }).returningAll().executeTakeFirstOrThrow();
+      
+      return { user, staff };
+    } catch (error: any) {
+      if (error instanceof Error && 'issues' in error) {
+        const errorMessages = (error as any).issues.map((issue: any) => {
+          const field = issue.path.join('.');
+          const message = issue.message;
+          return `${field}: ${message}`;
+        });
+        throw new Error(`Validation error: ${errorMessages.join(', ')}`);
+      }
+      throw error;
+    }
+  }
+   
+   async update(context: UserContext, id: number | string, data: Partial<StaffType>) {
+     const existing = await db.selectFrom("staff").select("userId").where("id", "=", Number(id)).where("schoolId", "=", context.schoolId).executeTakeFirst();
+     if (!existing) throw new Error("Staff not found");
+      
+     if (data.firstName || data.lastName || data.email || data.phone) {
+       await db.updateTable("users").set({ 
+         firstName: data.firstName, 
+         lastName: data.lastName, 
+         email: data.email, 
+         phone: data.phone, 
+         updatedAt: new Date(), 
+         updatedBy: context.userId 
+       }).where("id", "=", existing.userId).execute();
+     }
+      
+     const staffUpdate: any = { 
+       updatedAt: new Date(), 
+       updatedBy: context.userId 
+     };
+      
+     if (data.employeeNo !== undefined) staffUpdate.employeeNo = data.employeeNo;
+     if (data.hireDate !== undefined) staffUpdate.hireDate = data.hireDate;
+     if (data.departmentId !== undefined) staffUpdate.departmentId = data.departmentId;
+     if (data.roleId !== undefined) staffUpdate.roleId = data.roleId;
+     if (data.isActive !== undefined) staffUpdate.isActive = data.isActive;
+
+     return await db.updateTable("staff").set(staffUpdate).where("id", "=", Number(id)).where("schoolId", "=", context.schoolId).returningAll().executeTakeFirst();
+   }
+   
+   async delete(context: UserContext, id: number | string) {
+     return await db.updateTable("staff").set({ 
+       isDeleted: true, 
+       deletedAt: new Date(), 
+       deletedBy: context.userId 
+     }).where("id", "=", Number(id)).where("schoolId", "=", context.schoolId).returningAll().executeTakeFirstOrThrow();
+   }
+   
+   async getTransferHistory(context: UserContext, staffId: string | number) {
+      return await db.selectFrom("staffTransfers as st")
+        .leftJoin("departments as d1", "d1.id", "st.oldDepartmentId")
+        .leftJoin("departments as d2", "d2.id", "st.newDepartmentId")
+        .select([
+          "st.id", "st.staffId", "st.oldDepartmentId", "d1.name as old_department_name",
+          "st.newDepartmentId", "d2.name as new_department_name",
+          "st.transferDate", "st.remarks", "st.createdAt"
+        ])
+        .where("st.staffId", "=", Number(staffId))
+        .where("st.schoolId", "=", context.schoolId)
+        .where("st.isDeleted", "=", false)
+        .orderBy("st.transferDate", "desc")
+        .execute();
+  }
+   
+   async getPromotionHistory(context: UserContext, staffId: string | number) {
+      return await db.selectFrom("staffmgtPromotions as sp")
+        .leftJoin("staffmgtRoles as r1", "r1.id", "sp.oldRoleId")
+        .leftJoin("staffmgtRoles as r2", "r2.id", "sp.newRoleId")
+        .select([
+          "sp.id", "sp.staffmgtId", "sp.oldRoleId", "r1.name as old_role_name",
+          "sp.newRoleId", "r2.name as new_role_name", "sp.promotionDate", "sp.reason", "sp.remarks", "sp.createdAt"
+        ])
+        .where("sp.staffmgtId", "=", Number(staffId))
+        .where("sp.schoolId", "=", context.schoolId)
+        .where("sp.isDeleted", "=", false)
+        .orderBy("sp.promotionDate", "desc")
+        .execute();
+  }
+   
+   async getStatistics(context: UserContext) {
+     const staffStats = await db.selectFrom("staff").where("schoolId", "=", context.schoolId).where("isDeleted", "=", false).select((eb: any) => [ 
+       eb.fn.count("id").as("total_staff"), 
+       eb.fn.count("id").filterWhere("isActive", "=", true).as("active_staff") 
+     ]).executeTakeFirst();
+      
+     const onLeave = await db.selectFrom("staffLeaveRecords" as any)
+      .where("schoolId", "=", context.schoolId)
+      .where("status", "=", "active")
+      .where("leaveType", "=", "on_leave")
+      .where("startDate", "<=", new Date().toISOString())
+      .where("endDate", ">=", new Date().toISOString())
+      .select((eb: any) => [eb.fn.countDistinct("staffId").as("on_leave")])
+      .executeTakeFirst();
+      
+     const pendingLeaveRequests = await db.selectFrom("leaveRequests" as any)
+      .where("schoolId", "=", context.schoolId)
+      .where("status", "=", "pending")
+      .select((eb: any) => [eb.fn.count("id").as("pending_leave_requests")])
+      .executeTakeFirst();
+      
+     const departments = await db.selectFrom("departments")
+      .where("schoolId", "=", context.schoolId)
+      .where("isDeleted", "=", false)
+      .select((eb: any) => [eb.fn.count("id").as("departments_count")])
+      .executeTakeFirst();
+      
+     const todayAttendance = await db.selectFrom("staffAttendance" as any)
+      .where("schoolId", "=", context.schoolId)
+      .where("date", "=", new Date().toISOString().split("T")[0])
+      .where("status", "=", "present")
+      .select((eb: any) => [eb.fn.countDistinct("staffId").as("today_attendance")])
+      .executeTakeFirst();
+      
+    return {
+      total_staff: Number(staffStats?.total_staff || 0),
+      active_staff: Number(staffStats?.active_staff || 0),
+      on_leave: Number(onLeave?.on_leave || 0),
+      pending_leave_requests: Number(pendingLeaveRequests?.pending_leave_requests || 0),
+      departments_count: Number(departments?.departments_count || 0),
+      today_attendance: Number(todayAttendance?.today_attendance || 0),
+    };
+  }
+   
+   async getRoles(context: UserContext) {
+      return await db.selectFrom("staffmgtRoles")
+        .where("schoolId", "=", context.schoolId)
+        .where("isDeleted", "=", false)
+        .select(["id", "name", "code", "description", "isActive"])
+        .execute();
+   }
+   
+   async getDepartments(context: UserContext) {
+      return await db.selectFrom("departments")
+        .where("schoolId", "=", context.schoolId)
+        .where("isDeleted", "=", false)
+        .select(["id", "name", "code", "description", "isActive"])
+        .execute();
+   }
+   
+   async transfer(context: UserContext, staffId: number | string, data: { 
+    newDepartmentId: number; 
+    transferDate: string; 
+    remarks?: string; 
+    transferredBy: number 
+   }) {
+      const staff = await db.selectFrom("staff")
+        .where("id", "=", Number(staffId))
+        .where("schoolId", "=", context.schoolId)
+        .where("isDeleted", "=", false)
+        .select(["id", "departmentId", "employeeNo"])
+        .executeTakeFirstOrThrow();
+        
+      const result = await db.insertInto("staffTransfers")
+        .values({ 
+          staffId: Number(staffId), 
+          schoolId: context.schoolId, 
+          oldDepartmentId: staff.departmentId, 
+          newDepartmentId: data.newDepartmentId, 
+          transferDate: data.transferDate, 
+          remarks: data.remarks, 
+          transferredBy: data.transferredBy, 
+          isDeleted: false, 
+          createdBy: context.userId 
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+        
+      await db.updateTable("staff")
+        .set({ departmentId: data.newDepartmentId })
+        .where("id", "=", Number(staffId))
+        .execute();
+        
+      return result;
+   }
+   
+   async promote(context: UserContext, staffId: number | string, data: { 
+    newRoleId: number; 
+    promotionDate: string; 
+    reason?: string; 
+    remarks?: string; 
+    promotedBy: number 
+   }) {
+      const staff = await db.selectFrom("staff")
+        .where("id", "=", Number(staffId))
+        .where("schoolId", "=", context.schoolId)
+        .where("isDeleted", "=", false)
+        .select(["id", "roleId", "departmentId", "employeeNo"])
+        .executeTakeFirstOrThrow();
+        
+      const result = await db.insertInto("staffmgtPromotions")
+        .values({
+          staffmgtId: Number(staffId),
+          schoolId: context.schoolId,
+          oldRoleId: staff.roleId,
+          newRoleId: data.newRoleId,
+          oldDepartmentId: staff.departmentId,
+          newDepartmentId: staff.departmentId,
+          promotionDate: data.promotionDate,
+          reason: data.reason,
+          remarks: data.remarks,
+          isDeleted: false,
+          createdBy: context.userId
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+        
+      await db.updateTable("staff")
+        .set({ roleId: data.newRoleId })
+        .where("id", "=", Number(staffId))
+        .execute();
+        
+      return result;
+   }
+}
+export const staffService = new StaffService();

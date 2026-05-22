@@ -1,0 +1,437 @@
+-- ============================================
+-- Staff Management Complete Seed Data
+-- Permissions, Route Permissions, and Sidebar Configuration
+-- ============================================
+
+-- ============================================
+-- PART 1: ADD MISSING PERMISSIONS
+-- ============================================
+
+-- Insert new permissions for all Staff Management modules
+-- (Starting from ID 300 to avoid conflicts)
+
+INSERT INTO permissions (id, name, module, resource, action)
+VALUES
+  -- Core Staff Management (already exists, just verifying)
+  (300, 'Manage Staff Dashboard', 'staffmgt', 'staff_dashboard', 'manage'),
+  (301, 'View Staff Dashboard', 'staffmgt', 'staff_dashboard', 'read'),
+  
+  -- Staff Attendance
+  (302, 'View Attendance Records', 'staffmgt', 'staff_attendance', 'read'),
+  (303, 'Create Attendance Record', 'staffmgt', 'staff_attendance', 'create'),
+  (304, 'Update Attendance Record', 'staffmgt', 'staff_attendance', 'update'),
+  (305, 'Delete Attendance Record', 'staffmgt', 'staff_attendance', 'delete'),
+  (306, 'Clock In/Out', 'staffmgt', 'staff_attendance', 'clock'),
+  (307, 'View Attendance Statistics', 'staffmgt', 'staff_attendance', 'statistics'),
+  (308, 'Export Attendance Report', 'staffmgt', 'staff_attendance', 'export'),
+  
+  -- Leave Management
+  (309, 'View Leave Requests', 'staffmgt', 'leave_requests', 'read'),
+  (310, 'Create Leave Request', 'staffmgt', 'leave_requests', 'create'),
+  (311, 'Update Leave Request', 'staffmgt', 'leave_requests', 'update'),
+  (312, 'Delete Leave Request', 'staffmgt', 'leave_requests', 'delete'),
+  (313, 'Approve Leave Request', 'staffmgt', 'leave_requests', 'approve'),
+  (314, 'Reject Leave Request', 'staffmgt', 'leave_requests', 'reject'),
+  (315, 'Manage Leave Types', 'staffmgt', 'leave_types', 'manage'),
+  (316, 'View Leave Types', 'staffmgt', 'leave_types', 'read'),
+  (317, 'Manage Leave Quotas', 'staffmgt', 'leave_quotas', 'manage'),
+  (318, 'View Leave Quotas', 'staffmgt', 'leave_quotas', 'read'),
+  (319, 'View Leave Calendar', 'staffmgt', 'leave_calendar', 'read'),
+  (320, 'View Leave Statistics', 'staffmgt', 'leave_requests', 'statistics'),
+  
+  -- Performance Reviews
+  (321, 'View Performance Reviews', 'staffmgt', 'performance_reviews', 'read'),
+  (322, 'Create Performance Review', 'staffmgt', 'performance_reviews', 'create'),
+  (323, 'Update Performance Review', 'staffmgt', 'performance_reviews', 'update'),
+  (324, 'Delete Performance Review', 'staffmgt', 'performance_reviews', 'delete'),
+  (325, 'Approve Performance Review', 'staffmgt', 'performance_reviews', 'approve'),
+  (326, 'View Performance Templates', 'staffmgt', 'performance_templates', 'read'),
+  (327, 'Manage Performance Templates', 'staffmgt', 'performance_templates', 'manage'),
+  (328, 'View Performance Statistics', 'staffmgt', 'performance_reviews', 'statistics'),
+  
+  -- Contracts
+  (329, 'View Staff Contracts', 'staffmgt', 'staff_contracts', 'read'),
+  (330, 'Create Staff Contract', 'staffmgt', 'staff_contracts', 'create'),
+  (331, 'Update Staff Contract', 'staffmgt', 'staff_contracts', 'update'),
+  (332, 'Delete Staff Contract', 'staffmgt', 'staff_contracts', 'delete'),
+  (333, 'Sign Contract', 'staffmgt', 'staff_contracts', 'sign'),
+  (334, 'Renew Contract', 'staffmgt', 'staff_contracts', 'renew'),
+  (335, 'Terminate Contract', 'staffmgt', 'staff_contracts', 'terminate'),
+  (336, 'View Contract Statistics', 'staffmgt', 'staff_contracts', 'statistics'),
+  
+  -- Training
+  (337, 'View Training Courses', 'staffmgt', 'training_courses', 'read'),
+  (338, 'Create Training Course', 'staffmgt', 'training_courses', 'create'),
+  (339, 'Update Training Course', 'staffmgt', 'training_courses', 'update'),
+  (340, 'Delete Training Course', 'staffmgt', 'training_courses', 'delete'),
+  (341, 'Enroll in Training', 'staffmgt', 'training_enrollments', 'enroll'),
+  (342, 'View Training Enrollments', 'staffmgt', 'training_enrollments', 'read'),
+  (343, 'Complete Training', 'staffmgt', 'training_enrollments', 'complete'),
+  (344, 'View Training Statistics', 'staffmgt', 'training_courses', 'statistics'),
+  
+  -- Payroll
+  (345, 'View Payroll Records', 'staffmgt', 'staff_payroll', 'read'),
+  (346, 'Create Payroll Record', 'staffmgt', 'staff_payroll', 'create'),
+  (347, 'Update Payroll Record', 'staffmgt', 'staff_payroll', 'update'),
+  (348, 'Delete Payroll Record', 'staffmgt', 'staff_payroll', 'delete'),
+  (349, 'Process Payroll', 'staffmgt', 'staff_payroll', 'process'),
+  (350, 'View Payroll Statistics', 'staffmgt', 'staff_payroll', 'statistics'),
+  (351, 'Export Payroll Report', 'staffmgt', 'staff_payroll', 'export'),
+  
+  -- Hiring/Recruitment
+  (352, 'View Job Postings', 'staffmgt', 'hiring_jobs', 'read'),
+  (353, 'Create Job Posting', 'staffmgt', 'hiring_jobs', 'create'),
+  (354, 'Update Job Posting', 'staffmgt', 'hiring_jobs', 'update'),
+  (355, 'Delete Job Posting', 'staffmgt', 'hiring_jobs', 'delete'),
+  (356, 'View Job Applications', 'staffmgt', 'hiring_applications', 'read'),
+  (357, 'Create Job Application', 'staffmgt', 'hiring_applications', 'create'),
+  (358, 'Update Job Application', 'staffmgt', 'hiring_applications', 'update'),
+  (359, 'Delete Job Application', 'staffmgt', 'hiring_applications', 'delete'),
+  (360, 'Schedule Interview', 'staffmgt', 'hiring_applications', 'interview'),
+  (361, 'View Hiring Statistics', 'staffmgt', 'hiring', 'statistics'),
+  
+  -- ID & Access
+  (362, 'View Staff ID Access', 'staffmgt', 'staff_id_access', 'read'),
+  (363, 'Create Staff ID Access', 'staffmgt', 'staff_id_access', 'create'),
+  (364, 'Update Staff ID Access', 'staffmgt', 'staff_id_access', 'update'),
+  (365, 'Delete Staff ID Access', 'staffmgt', 'staff_id_access', 'delete'),
+  (366, 'Activate/Deactivate Access', 'staffmgt', 'staff_id_access', 'toggle'),
+  (367, 'View Access Statistics', 'staffmgt', 'staff_id_access', 'statistics'),
+  
+  -- Disciplinary
+  (368, 'View Disciplinary Actions', 'staffmgt', 'disciplinary_actions', 'read'),
+  (369, 'Create Disciplinary Action', 'staffmgt', 'disciplinary_actions', 'create'),
+  (370, 'Update Disciplinary Action', 'staffmgt', 'disciplinary_actions', 'update'),
+  (371, 'Delete Disciplinary Action', 'staffmgt', 'disciplinary_actions', 'delete'),
+  (372, 'Approve Disciplinary Action', 'staffmgt', 'disciplinary_actions', 'approve'),
+  (373, 'View Disciplinary Statistics', 'staffmgt', 'disciplinary_actions', 'statistics'),
+  
+  -- Promotions
+  (374, 'View Staff Promotions', 'staffmgt', 'staff_promotions', 'read'),
+  (375, 'Create Staff Promotion', 'staffmgt', 'staff_promotions', 'create'),
+  (376, 'Update Staff Promotion', 'staffmgt', 'staff_promotions', 'update'),
+  (377, 'Delete Staff Promotion', 'staffmgt', 'staff_promotions', 'delete'),
+  (378, 'Approve Staff Promotion', 'staffmgt', 'staff_promotions', 'approve');
+
+-- ============================================
+-- PART 2: ROUTE PERMISSIONS FOR SIDEBAR
+-- ============================================
+
+-- Insert route_permissions for Staff Management module
+-- These will be organized in a hierarchical sidebar with groups
+
+-- Core Staff Dashboard
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/dashboard', 'GET', 'staffmgt.staff_dashboard.manage', 'staffmgt', 'staff_dashboard', 'staffmgt.staff_dashboard.manage', 'Dashboard', 'LayoutDashboard', TRUE, 1, NULL)
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Main Staff Management (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/staff', 'GET', 'staffmgt.staff.read', 'staffmgt', 'staff', 'staffmgt.staff.read', 'Staff Directory', 'Users', TRUE, 10, NULL),
+  ('/staffmgt/staff/new', 'GET', 'staffmgt.staff.create', 'staffmgt', 'staff', 'staffmgt.staff.create', 'Add Staff Member', 'UserPlus', FALSE, 11, 'staff'),
+  ('/staffmgt/staff/:id', 'GET', 'staffmgt.staff.read', 'staffmgt', 'staff', 'staffmgt.staff.read', 'View Staff Details', 'User', FALSE, 12, 'staff'),
+  ('/staffmgt/staff/:id/edit', 'GET', 'staffmgt.staff.update', 'staffmgt', 'staff', 'staffmgt.staff.update', 'Edit Staff', 'Edit', FALSE, 13, 'staff')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Attendance Management (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/attendance', 'GET', 'staffmgt.staff_attendance.read', 'staffmgt', 'staff_attendance', 'staffmgt.staff_attendance.read', 'Attendance', 'Clock', TRUE, 20, NULL),
+  ('/staffmgt/attendance/clock-in', 'POST', 'staffmgt.staff_attendance.clock', 'staffmgt', 'staff_attendance', 'staffmgt.staff_attendance.clock', 'Clock In', 'LogIn', FALSE, 21, 'attendance'),
+  ('/staffmgt/attendance/clock-out', 'POST', 'staffmgt.staff_attendance.clock', 'staffmgt', 'staff_attendance', 'staffmgt.staff_attendance.clock', 'Clock Out', 'LogOut', FALSE, 22, 'attendance'),
+  ('/staffmgt/attendance/statistics', 'GET', 'staffmgt.staff_attendance.statistics', 'staffmgt', 'staff_attendance', 'staffmgt.staff_attendance.statistics', 'Attendance Analytics', 'BarChart3', FALSE, 23, 'attendance')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Leave Management (grouped as collapsible)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/leave', 'GET', 'staffmgt.leave_requests.read', 'staffmgt', 'leave_requests', 'staffmgt.leave_requests.read', 'Leave Management', 'CalendarDays', TRUE, 30, NULL),
+  ('/staffmgt/leave/requests', 'GET', 'staffmgt.leave_requests.read', 'staffmgt', 'leave_requests', 'staffmgt.leave_requests.read', 'Leave Requests', 'FileText', FALSE, 31, 'leave'),
+  ('/staffmgt/leave/requests/new', 'GET', 'staffmgt.leave_requests.create', 'staffmgt', 'leave_requests', 'staffmgt.leave_requests.create', 'New Leave Request', 'PlusCircle', FALSE, 32, 'leave'),
+  ('/staffmgt/leave/types', 'GET', 'staffmgt.leave_types.read', 'staffmgt', 'leave_types', 'staffmgt.leave_types.read', 'Leave Types', 'Tag', FALSE, 33, 'leave'),
+  ('/staffmgt/leave/quotas', 'GET', 'staffmgt.leave_quotas.read', 'staffmgt', 'leave_quotas', 'staffmgt.leave_quotas.read', 'Leave Quotas', 'PieChart', FALSE, 34, 'leave'),
+  ('/staffmgt/leave/calendar', 'GET', 'staffmgt.leave_calendar.read', 'staffmgt', 'leave_calendar', 'staffmgt.leave_calendar.read', 'Leave Calendar', 'Calendar', FALSE, 35, 'leave')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Performance Reviews (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/performance', 'GET', 'staffmgt.performance_reviews.read', 'staffmgt', 'performance_reviews', 'staffmgt.performance_reviews.read', 'Performance', 'TrendingUp', TRUE, 40, NULL),
+  ('/staffmgt/performance/reviews', 'GET', 'staffmgt.performance_reviews.read', 'staffmgt', 'performance_reviews', 'staffmgt.performance_reviews.read', 'Reviews', 'ClipboardCheck', FALSE, 41, 'performance'),
+  ('/staffmgt/performance/reviews/new', 'GET', 'staffmgt.performance_reviews.create', 'staffmgt', 'performance_reviews', 'staffmgt.performance_reviews.create', 'New Review', 'PlusCircle', FALSE, 42, 'performance'),
+  ('/staffmgt/performance/templates', 'GET', 'staffmgt.performance_templates.read', 'staffmgt', 'performance_templates', 'staffmgt.performance_templates.read', 'Templates', 'FileTemplate', FALSE, 43, 'performance')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Contracts (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/contracts', 'GET', 'staffmgt.staff_contracts.read', 'staffmgt', 'staff_contracts', 'staffmgt.staff_contracts.read', 'Contracts', 'FileSignature', TRUE, 50, NULL),
+  ('/staffmgt/contracts/new', 'GET', 'staffmgt.staff_contracts.create', 'staffmgt', 'staff_contracts', 'staffmgt.staff_contracts.create', 'New Contract', 'FilePlus', FALSE, 51, 'contracts'),
+  ('/staffmgt/contracts/expiring', 'GET', 'staffmgt.staff_contracts.read', 'staffmgt', 'staff_contracts', 'staffmgt.staff_contracts.read', 'Expiring Contracts', 'AlertTriangle', FALSE, 52, 'contracts')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Training (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/training', 'GET', 'staffmgt.training_courses.read', 'staffmgt', 'training_courses', 'staffmgt.training_courses.read', 'Training', 'GraduationCap', TRUE, 60, NULL),
+  ('/staffmgt/training/courses', 'GET', 'staffmgt.training_courses.read', 'staffmgt', 'training_courses', 'staffmgt.training_courses.read', 'Courses', 'BookOpen', FALSE, 61, 'training'),
+  ('/staffmgt/training/courses/new', 'GET', 'staffmgt.training_courses.create', 'staffmgt', 'training_courses', 'staffmgt.training_courses.create', 'New Course', 'PlusCircle', FALSE, 62, 'training'),
+  ('/staffmgt/training/enrollments', 'GET', 'staffmgt.training_enrollments.read', 'staffmgt', 'training_enrollments', 'staffmgt.training_enrollments.read', 'Enrollments', 'UserCheck', FALSE, 63, 'training')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Payroll (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/payroll', 'GET', 'staffmgt.staff_payroll.read', 'staffmgt', 'staff_payroll', 'staffmgt.staff_payroll.read', 'Payroll', 'DollarSign', TRUE, 70, NULL),
+  ('/staffmgt/payroll/process', 'GET', 'staffmgt.staff_payroll.process', 'staffmgt', 'staff_payroll', 'staffmgt.staff_payroll.process', 'Process Payroll', 'CreditCard', FALSE, 71, 'payroll'),
+  ('/staffmgt/payroll/statistics', 'GET', 'staffmgt.staff_payroll.statistics', 'staffmgt', 'staff_payroll', 'staffmgt.staff_payroll.statistics', 'Payroll Analytics', 'BarChart3', FALSE, 72, 'payroll')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Hiring/Recruitment (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/hiring', 'GET', 'staffmgt.hiring_jobs.read', 'staffmgt', 'hiring_jobs', 'staffmgt.hiring_jobs.read', 'Recruitment', 'Briefcase', TRUE, 80, NULL),
+  ('/staffmgt/hiring/jobs', 'GET', 'staffmgt.hiring_jobs.read', 'staffmgt', 'hiring_jobs', 'staffmgt.hiring_jobs.read', 'Job Postings', 'FileText', FALSE, 81, 'hiring'),
+  ('/staffmgt/hiring/jobs/new', 'GET', 'staffmgt.hiring_jobs.create', 'staffmgt', 'hiring_jobs', 'staffmgt.hiring_jobs.create', 'New Job Posting', 'PlusCircle', FALSE, 82, 'hiring'),
+  ('/staffmgt/hiring/applications', 'GET', 'staffmgt.hiring_applications.read', 'staffmgt', 'hiring_applications', 'staffmgt.hiring_applications.read', 'Applications', 'Inbox', FALSE, 83, 'hiring')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- ID & Access (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/id-access', 'GET', 'staffmgt.staff_id_access.read', 'staffmgt', 'staff_id_access', 'staffmgt.staff_id_access.read', 'ID & Access', 'Key', TRUE, 90, NULL),
+  ('/staffmgt/id-access/manage', 'GET', 'staffmgt.staff_id_access.read', 'staffmgt', 'staff_id_access', 'staffmgt.staff_id_access.read', 'Manage Access', 'Settings', FALSE, 91, 'id-access')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Disciplinary (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/disciplinary', 'GET', 'staffmgt.disciplinary_actions.read', 'staffmgt', 'disciplinary_actions', 'staffmgt.disciplinary_actions.read', 'Disciplinary', 'AlertCircle', TRUE, 100, NULL),
+  ('/staffmgt/disciplinary/actions', 'GET', 'staffmgt.disciplinary_actions.read', 'staffmgt', 'disciplinary_actions', 'staffmgt.disciplinary_actions.read', 'Actions', 'FileWarning', FALSE, 101, 'disciplinary'),
+  ('/staffmgt/disciplinary/actions/new', 'GET', 'staffmgt.disciplinary_actions.create', 'staffmgt', 'disciplinary_actions', 'staffmgt.disciplinary_actions.create', 'New Action', 'PlusCircle', FALSE, 102, 'disciplinary')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Promotions (grouped)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/promotions', 'GET', 'staffmgt.staff_promotions.read', 'staffmgt', 'staff_promotions', 'staffmgt.staff_promotions.read', 'Promotions', 'Award', TRUE, 110, NULL),
+  ('/staffmgt/promotions/new', 'GET', 'staffmgt.staff_promotions.create', 'staffmgt', 'staff_promotions', 'staffmgt.staff_promotions.create', 'New Promotion', 'PlusCircle', FALSE, 111, 'promotions')
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- Configuration (grouped - settings)
+INSERT INTO public.route_permissions (route, method, action, module, resource, permission_key, display_name, icon, is_menu_item, display_order, group_name)
+VALUES 
+  ('/staffmgt/departments', 'GET', 'staffmgt.departments.manage', 'staffmgt', 'departments', 'staffmgt.departments.manage', 'Departments', 'Building2', FALSE, 200, 'configuration'),
+  ('/staffmgt/roles', 'GET', 'staffmgt.staffmgt_roles.manage', 'staffmgt', 'staffmgt_roles', 'staffmgt.staffmgt_roles.manage', 'Staff Roles', 'Shield', FALSE, 201, 'configuration'),
+  ('/staffmgt/employment-types', 'GET', 'staffmgt.employment_types.manage', 'staffmgt', 'employment_types', 'staffmgt.employment_types.manage', 'Employment Types', 'Briefcase', FALSE, 202, 'configuration'),
+  ('/staffmgt/education-levels', 'GET', 'staffmgt.education_levels.manage', 'staffmgt', 'education_levels', 'staffmgt.education_levels.manage', 'Education Levels', 'GraduationCap', FALSE, 203, 'configuration'),
+  ('/staffmgt/settings', 'GET', 'staffmgt.settings.manage', 'staffmgt', 'settings', 'staffmgt.settings.manage', 'Settings', 'Settings', TRUE, 210, NULL)
+ON CONFLICT (route, method, action) DO NOTHING;
+
+-- ============================================
+-- PART 3: SIDEBAR GROUPING CONFIGURATION
+-- ============================================
+
+-- Update main menu items to be visible in sidebar
+UPDATE route_permissions
+SET is_menu_item = TRUE, 
+    group_name = '_flat'
+WHERE module = 'staffmgt'
+  AND resource IN (
+    'staff_dashboard',
+    'staff',
+    'staff_attendance',
+    'leave_requests',
+    'performance_reviews',
+    'staff_contracts',
+    'training_courses',
+    'staff_payroll',
+    'hiring_jobs',
+    'staff_id_access',
+    'disciplinary_actions',
+    'staff_promotions',
+    'settings'
+  )
+  AND display_order < 150;
+
+-- Update sub-items to be grouped under parent menus
+-- Staff sub-items
+UPDATE route_permissions
+SET group_name = 'staff'
+WHERE module = 'staffmgt'
+  AND resource = 'staff'
+  AND display_order > 10
+  AND display_order < 20;
+
+-- Attendance sub-items
+UPDATE route_permissions
+SET group_name = 'attendance'
+WHERE module = 'staffmgt'
+  AND resource = 'staff_attendance'
+  AND display_order > 20
+  AND display_order < 30;
+
+-- Leave sub-items
+UPDATE route_permissions
+SET group_name = 'leave'
+WHERE module = 'staffmgt'
+  AND resource IN ('leave_requests', 'leave_types', 'leave_quotas', 'leave_calendar')
+  AND display_order >= 30
+  AND display_order < 40;
+
+-- Performance sub-items
+UPDATE route_permissions
+SET group_name = 'performance'
+WHERE module = 'staffmgt'
+  AND resource IN ('performance_reviews', 'performance_templates')
+  AND display_order >= 40
+  AND display_order < 50;
+
+-- Contracts sub-items
+UPDATE route_permissions
+SET group_name = 'contracts'
+WHERE module = 'staffmgt'
+  AND resource = 'staff_contracts'
+  AND display_order >= 50
+  AND display_order < 60;
+
+-- Training sub-items
+UPDATE route_permissions
+SET group_name = 'training'
+WHERE module = 'staffmgt'
+  AND resource IN ('training_courses', 'training_enrollments')
+  AND display_order >= 60
+  AND display_order < 70;
+
+-- Payroll sub-items
+UPDATE route_permissions
+SET group_name = 'payroll'
+WHERE module = 'staffmgt'
+  AND resource = 'staff_payroll'
+  AND display_order >= 70
+  AND display_order < 80;
+
+-- Hiring sub-items
+UPDATE route_permissions
+SET group_name = 'hiring'
+WHERE module = 'staffmgt'
+  AND resource IN ('hiring_jobs', 'hiring_applications')
+  AND display_order >= 80
+  AND display_order < 90;
+
+-- ID & Access sub-items
+UPDATE route_permissions
+SET group_name = 'id-access'
+WHERE module = 'staffmgt'
+  AND resource = 'staff_id_access'
+  AND display_order >= 90
+  AND display_order < 100;
+
+-- Disciplinary sub-items
+UPDATE route_permissions
+SET group_name = 'disciplinary'
+WHERE module = 'staffmgt'
+  AND resource = 'disciplinary_actions'
+  AND display_order >= 100
+  AND display_order < 110;
+
+-- Promotions sub-items
+UPDATE route_permissions
+SET group_name = 'promotions'
+WHERE module = 'staffmgt'
+  AND resource = 'staff_promotions'
+  AND display_order >= 110
+  AND display_order < 120;
+
+-- Configuration sub-items
+UPDATE route_permissions
+SET group_name = 'configuration'
+WHERE module = 'staffmgt'
+  AND resource IN ('departments', 'staffmgt_roles', 'employment_types', 'education_levels')
+  AND display_order >= 200;
+
+-- ============================================
+-- PART 4: ICONS FOR STAFF MANAGEMENT
+-- ============================================
+
+-- Ensure all staffmgt resources have proper icons
+UPDATE route_permissions SET icon = 'LayoutDashboard' WHERE module = 'staffmgt' AND resource = 'staff_dashboard';
+UPDATE route_permissions SET icon = 'Users' WHERE module = 'staffmgt' AND resource = 'staff';
+UPDATE route_permissions SET icon = 'Clock' WHERE module = 'staffmgt' AND resource = 'staff_attendance';
+UPDATE route_permissions SET icon = 'CalendarDays' WHERE module = 'staffmgt' AND resource = 'leave_requests';
+UPDATE route_permissions SET icon = 'Tag' WHERE module = 'staffmgt' AND resource = 'leave_types';
+UPDATE route_permissions SET icon = 'PieChart' WHERE module = 'staffmgt' AND resource = 'leave_quotas';
+UPDATE route_permissions SET icon = 'Calendar' WHERE module = 'staffmgt' AND resource = 'leave_calendar';
+UPDATE route_permissions SET icon = 'TrendingUp' WHERE module = 'staffmgt' AND resource = 'performance_reviews';
+UPDATE route_permissions SET icon = 'FileTemplate' WHERE module = 'staffmgt' AND resource = 'performance_templates';
+UPDATE route_permissions SET icon = 'FileSignature' WHERE module = 'staffmgt' AND resource = 'staff_contracts';
+UPDATE route_permissions SET icon = 'GraduationCap' WHERE module = 'staffmgt' AND resource = 'training_courses';
+UPDATE route_permissions SET icon = 'UserCheck' WHERE module = 'staffmgt' AND resource = 'training_enrollments';
+UPDATE route_permissions SET icon = 'DollarSign' WHERE module = 'staffmgt' AND resource = 'staff_payroll';
+UPDATE route_permissions SET icon = 'Briefcase' WHERE module = 'staffmgt' AND resource = 'hiring_jobs';
+UPDATE route_permissions SET icon = 'Inbox' WHERE module = 'staffmgt' AND resource = 'hiring_applications';
+UPDATE route_permissions SET icon = 'Key' WHERE module = 'staffmgt' AND resource = 'staff_id_access';
+UPDATE route_permissions SET icon = 'AlertCircle' WHERE module = 'staffmgt' AND resource = 'disciplinary_actions';
+UPDATE route_permissions SET icon = 'Award' WHERE module = 'staffmgt' AND resource = 'staff_promotions';
+UPDATE route_permissions SET icon = 'Building2' WHERE module = 'staffmgt' AND resource = 'departments';
+UPDATE route_permissions SET icon = 'Shield' WHERE module = 'staffmgt' AND resource = 'staffmgt_roles';
+UPDATE route_permissions SET icon = 'Briefcase' WHERE module = 'staffmgt' AND resource = 'employment_types';
+UPDATE route_permissions SET icon = 'Settings' WHERE module = 'staffmgt' AND resource = 'settings';
+
+-- ============================================
+-- PART 5: DISPLAY ORDER OPTIMIZATION
+-- ============================================
+
+-- Optimize display order for cleaner sidebar
+-- Priority: Most frequently used items first
+
+UPDATE route_permissions SET display_order = 1  WHERE module = 'staffmgt' AND resource = 'staff_dashboard';
+UPDATE route_permissions SET display_order = 10 WHERE module = 'staffmgt' AND resource = 'staff';
+UPDATE route_permissions SET display_order = 20 WHERE module = 'staffmgt' AND resource = 'staff_attendance';
+UPDATE route_permissions SET display_order = 30 WHERE module = 'staffmgt' AND resource = 'leave_requests';
+UPDATE route_permissions SET display_order = 40 WHERE module = 'staffmgt' AND resource = 'performance_reviews';
+UPDATE route_permissions SET display_order = 50 WHERE module = 'staffmgt' AND resource = 'staff_contracts';
+UPDATE route_permissions SET display_order = 60 WHERE module = 'staffmgt' AND resource = 'training_courses';
+UPDATE route_permissions SET display_order = 70 WHERE module = 'staffmgt' AND resource = 'staff_payroll';
+UPDATE route_permissions SET display_order = 80 WHERE module = 'staffmgt' AND resource = 'hiring_jobs';
+UPDATE route_permissions SET display_order = 90 WHERE module = 'staffmgt' AND resource = 'staff_id_access';
+UPDATE route_permissions SET display_order = 100 WHERE module = 'staffmgt' AND resource = 'disciplinary_actions';
+UPDATE route_permissions SET display_order = 110 WHERE module = 'staffmgt' AND resource = 'staff_promotions';
+UPDATE route_permissions SET display_order = 210 WHERE module = 'staffmgt' AND resource = 'settings';
+
+-- ============================================
+-- PART 6: HIDE CONFIGURATION GROUP FROM MAIN MENU
+-- ============================================
+
+-- Make sure configuration is not shown as separate menu item
+UPDATE route_permissions
+SET is_menu_item = FALSE
+WHERE module = 'staffmgt'
+  AND resource IN ('departments', 'staffmgt_roles', 'employment_types', 'education_levels');
+
+-- ============================================
+-- VERIFICATION QUERY
+-- ============================================
+
+-- Run this to verify your sidebar will look like:
+-- SELECT display_order, display_name, icon, is_menu_item, group_name, resource
+-- FROM route_permissions
+-- WHERE module = 'staffmgt'
+-- ORDER BY display_order;
+
+-- Expected sidebar structure:
+-- 📊 Dashboard (order 1)
+-- 👥 Staff Directory (order 10)
+-- ⏰ Attendance (order 20)
+-- 📅 Leave Management (order 30) [collapsible]
+-- 📈 Performance (order 40) [collapsible]
+-- 📄 Contracts (order 50) [collapsible]
+-- 🎓 Training (order 60) [collapsible]
+-- 💰 Payroll (order 70) [collapsible]
+-- 💼 Recruitment (order 80) [collapsible]
+-- 🔑 ID & Access (order 90) [collapsible]
+-- ⚠️ Disciplinary (order 100) [collapsible]
+-- 🏆 Promotions (order 110) [collapsible]
+-- ⚙️ Settings (order 210)
